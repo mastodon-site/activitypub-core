@@ -206,9 +206,13 @@ func (c *Config) LocalUsernameForActorURL(actorURL string) (string, bool) {
 	return "", false
 }
 
-// LocalUsernameForInboundFollowObject returns the local username when a remote server's Follow.activity.object
-// IRI targets this instance. It accepts our canonical profile URL (/@{user}) and common shapes such as
-// /users/{user} (Mastodon) so inbound follows still match AP_LOCAL_USERNAMES after WebFinger resolution quirks.
+// LocalUsernameForInboundFollowObject returns the local username when an IRI on this host refers to a
+// configured local actor, for federation compatibility:
+//
+//   - Canonical profile: https://domain/@username (what we publish in actor JSON and WebFinger)
+//   - Alias profile:     https://domain/users/username (common third-party / tooling convention)
+//
+// Use for inbound Follow.object, outbound follow resolution, and addressing (via RefAddressesLocalRecipient).
 func (c *Config) LocalUsernameForInboundFollowObject(objectIRI string) (string, bool) {
 	if u, ok := c.LocalUsernameForActorURL(objectIRI); ok {
 		return u, true
@@ -258,12 +262,9 @@ func (c *Config) LocalUsernameForInboundFollowObject(objectIRI string) (string, 
 }
 
 // RefAddressesLocalRecipient reports whether ref is an IRI that targets this instance for delivery —
-// a local user's profile (canonical /@ URL or common /users/ alias), or the instance actor document.
-// Used when scanning to/cc/bto/bcc/audience to mirror handleFollow's LocalUsernameForInboundFollowObject rules.
+// a local user's profile (see LocalUsernameForInboundFollowObject) or the instance actor document.
+// Used when scanning to/cc/bto/bcc/audience.
 func (c *Config) RefAddressesLocalRecipient(ref string) bool {
-	if _, ok := c.LocalUsernameForActorURL(ref); ok {
-		return true
-	}
 	if _, ok := c.LocalUsernameForInboundFollowObject(ref); ok {
 		return true
 	}

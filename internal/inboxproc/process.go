@@ -30,7 +30,7 @@ type DeliverPayload struct {
 // handlers validate the JSON actor IRI against the stored actor_url for that row.
 // Side effects that honor addressing (Create/Update/Delete/Like/Announce/Block) run only when
 // activityShouldApplySideEffects reports that to/cc/bto/bcc/audience includes this instance
-// (shared inbox, Public, local profiles including Mastodon-style /users/{name}, or /.well-known/actor).
+// (shared inbox, Public, local profiles as canonical /@name or /users/name alias, or /.well-known/actor).
 // Follow, Accept, and Reject do not use that filter (delivery to our inbox already scopes them).
 // fetchPolicy overrides outbound URL policy when non-nil (tests); production callers pass nil.
 func ProcessInboxActivity(ctx context.Context, pool *pgxpool.Pool, q queue.Backend, cfg *config.Config, httpClient *http.Client, activityDBID int64, fetchPolicy *fetch.Policy) error {
