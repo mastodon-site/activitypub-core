@@ -48,6 +48,13 @@ func Mount(mux *http.ServeMux, h *aphttp.Handler, pool *pgxpool.Pool) {
 
 func (s *Server) cfg() *config.Config { return s.H.Config() }
 
+// writeAPIError returns a Mastodon-style JSON error body (clients expect JSON, not text/plain).
+func writeAPIError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
 func (s *Server) instanceHost() string {
 	u, err := url.Parse(s.cfg().PublicBaseURL)
 	if err != nil {
@@ -124,16 +131,16 @@ type appsAppJSON struct {
 
 func (s *Server) postApps(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	var raw appsAppJSON
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&raw); err != nil {
-		http.Error(w, "invalid json", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
 	if strings.TrimSpace(raw.RedirectURIs) == "" {
-		http.Error(w, "redirect_uris required", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "redirect_uris required")
 		return
 	}
 	if raw.Scopes == "" {
@@ -141,7 +148,7 @@ func (s *Server) postApps(w http.ResponseWriter, r *http.Request) {
 	}
 	app, err := store.InsertOAuthApplication(r.Context(), s.Pool, raw.ClientName, raw.RedirectURIs, raw.Website, raw.Scopes)
 	if err != nil {
-		http.Error(w, "could not create app", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "could not create app")
 		return
 	}
 	redirectFirst := strings.TrimSpace(raw.RedirectURIs)
