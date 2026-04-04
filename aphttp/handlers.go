@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mastodon-site/activitypub-core/blobs"
 	"github.com/mastodon-site/activitypub-core/internal/actorkey"
 	"github.com/mastodon-site/activitypub-core/internal/config"
 	"github.com/mastodon-site/activitypub-core/internal/fetch"
@@ -24,19 +25,22 @@ import (
 type Deps struct {
 	Store *store.Postgres
 	Queue queue.Backend
+	Blobs blobs.Store
 }
 
 // Handler bundles AP HTTP handlers for mounting on the API mux.
 type Handler struct {
 	cfg *config.Config
 	// actorPublicKeyPEM is PKIX PEM for JSON-LD publicKey.publicKeyPem; empty means use stub in GetActor.
-	actorPublicKeyPEM string
-	fetchClient       *http.Client
-	fetchPolicy       *fetch.Policy
-	inboxMaxBody      int
-	st                *store.Postgres
-	q                 queue.Backend
-	localActorIDs     map[string]int64 // username -> actors.id
+	actorPublicKeyPEM    string
+	fetchClient          *http.Client
+	fetchPolicy          *fetch.Policy
+	inboxMaxBody         int
+	st                   *store.Postgres
+	q                    queue.Backend
+	blobs                blobs.Store
+	localActorIDs        map[string]int64 // username -> actors.id
+	instancePublicKeyPEM string
 }
 
 // New creates AP HTTP handlers. cfg.PublicBaseURL must be set for meaningful responses.
@@ -48,6 +52,7 @@ func New(cfg *config.Config, deps Deps) (*Handler, error) {
 		cfg:          cfg,
 		st:           deps.Store,
 		q:            deps.Queue,
+		blobs:        deps.Blobs,
 		fetchClient:  fetch.NewHTTPClientForPolicy(pol, 30*time.Second),
 		fetchPolicy:  pol,
 		inboxMaxBody: cfg.InboxMaxBody,
@@ -58,6 +63,18 @@ func New(cfg *config.Config, deps Deps) (*Handler, error) {
 			return nil, err
 		}
 		h.actorPublicKeyPEM = pub
+	}
+	h.instancePublicKeyPEM = h.actorPublicKeyPEM
+	if strings.TrimSpace(cfg.InstanceActorPrivateKeyPath) != "" {
+		instPriv, err := actorkey.LoadPrivateKeyFromFile(cfg.InstanceActorPrivateKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("instance actor key: %w", err)
+		}
+		instPub, err := actorkey.PublicKeyPEMFromPrivate(instPriv)
+		if err != nil {
+			return nil, err
+		}
+		h.instancePublicKeyPEM = instPub
 	}
 	if h.st != nil {
 		h.localActorIDs = make(map[string]int64)
@@ -72,9 +89,57 @@ func New(cfg *config.Config, deps Deps) (*Handler, error) {
 			}
 			h.localActorIDs[uname] = id
 		}
+		base, err := url.Parse(cfg.PublicBaseURL)
+		if err == nil && base.Hostname() != "" {
+			fromDB, err := store.ListLocalActorsOnDomain(context.Background(), h.st.Pool, base.Hostname())
+			if err != nil {
+				return nil, fmt.Errorf("list local actors: %w", err)
+			}
+			seen := make(map[string]struct{})
+			for _, u := range cfg.LocalUsernames {
+				seen[u] = struct{}{}
+			}
+			for uname, id := range fromDB {
+				if existing, ok := h.localActorIDs[uname]; ok && existing != id {
+					return nil, fmt.Errorf("local actor %q: config id %d differs from database id %d", uname, existing, id)
+				}
+				h.localActorIDs[uname] = id
+				if _, ok := seen[uname]; !ok {
+					cfg.LocalUsernames = append(cfg.LocalUsernames, uname)
+					seen[uname] = struct{}{}
+				}
+			}
+		}
 	}
 	return h, nil
 }
+
+// IsLocalActor reports whether username is a known local account (configured or present in the database for this instance).
+func (h *Handler) IsLocalActor(username string) bool {
+	if h.localActorIDs != nil {
+		id, ok := h.localActorIDs[username]
+		return ok && id != 0
+	}
+	return h.cfg.IsLocalUsername(username)
+}
+
+// LocalActorID returns the database id for username when it is a local actor.
+func (h *Handler) LocalActorID(username string) (int64, bool) {
+	if h.localActorIDs == nil {
+		return 0, false
+	}
+	id, ok := h.localActorIDs[username]
+	return id, ok && id != 0
+}
+
+// FederationHTTPClient is the outbound HTTP client used for ActivityPub federation.
+func (h *Handler) FederationHTTPClient() *http.Client { return h.fetchClient }
+
+// FederationPolicy is the outbound fetch policy derived from configuration.
+func (h *Handler) FederationPolicy() *fetch.Policy { return h.fetchPolicy }
+
+// Config returns read-only service configuration for this handler.
+func (h *Handler) Config() *config.Config { return h.cfg }
 
 // WebFinger handles GET /.well-known/webfinger?resource=acct:user@host
 func (h *Handler) WebFinger(w http.ResponseWriter, r *http.Request) {
@@ -107,12 +172,12 @@ func (h *Handler) WebFinger(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "user not found", http.StatusNotFound)
 		return
 	}
-	if !h.cfg.IsLocalUsername(user) {
+	if !h.IsLocalActor(user) {
 		http.Error(w, "user not found", http.StatusNotFound)
 		return
 	}
 	subject := fmt.Sprintf("acct:%s@%s", user, host)
-	profile := strings.TrimRight(h.cfg.PublicBaseURL, "/") + "/users/" + url.PathEscape(user)
+	profile := h.cfg.LocalActorProfileURL(user)
 	resp := map[string]any{
 		"subject": subject,
 		"aliases": []string{profile},
@@ -131,57 +196,6 @@ func (h *Handler) WebFinger(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/jrd+json; charset=utf-8")
 	_ = json.NewEncoder(w).Encode(resp)
-}
-
-// GetActor returns a minimal Actor for the local user (stub until DB-backed).
-func (h *Handler) GetActor(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if h.cfg.PublicBaseURL == "" {
-		http.Error(w, "server not configured", http.StatusInternalServerError)
-		return
-	}
-	username := strings.TrimPrefix(r.URL.Path, "/users/")
-	username = strings.Trim(username, "/")
-	if !h.cfg.IsLocalUsername(username) {
-		http.Error(w, "not found", http.StatusNotFound)
-		return
-	}
-	base := strings.TrimRight(h.cfg.PublicBaseURL, "/")
-	profile := base + "/users/" + url.PathEscape(username)
-	inbox := base + "/inbox"
-	outbox := base + "/outbox/" + url.PathEscape(username)
-	keyID := profile + "#main-key"
-	publicPEM := h.actorPublicKeyPEM
-	if publicPEM == "" {
-		publicPEM = "-----BEGIN PUBLIC KEY-----\n(stub — set AP_ACTOR_PRIVATE_KEY_PATH)\n-----END PUBLIC KEY-----\n"
-	}
-	actor := map[string]any{
-		"@context": []any{
-			"https://www.w3.org/ns/activitystreams",
-			"https://w3id.org/security/v1",
-		},
-		"id":                profile,
-		"type":              "Person",
-		"preferredUsername": username,
-		"inbox":             inbox,
-		"outbox":            outbox,
-		"publicKey": map[string]any{
-			"id":           keyID,
-			"owner":        profile,
-			"type":         "Key",
-			"publicKeyPem": publicPEM,
-		},
-	}
-	accept := r.Header.Get("Accept")
-	if strings.Contains(accept, "application/ld+json") || strings.Contains(accept, "application/activity+json") {
-		w.Header().Set("Content-Type", "application/activity+json; charset=utf-8")
-	} else {
-		w.Header().Set("Content-Type", "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"; charset=utf-8")
-	}
-	_ = json.NewEncoder(w).Encode(actor)
 }
 
 // SharedInbox accepts signed ActivityPub POSTs (Digest + HTTP Signatures rsa-sha256 + remote keyId resolution).
@@ -223,7 +237,7 @@ func (h *Handler) SharedInbox(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing keyId in signature", http.StatusUnauthorized)
 		return
 	}
-	pub, err := fetch.PublicKeyForKeyID(r.Context(), h.fetchClient, h.fetchPolicy, keyID)
+	pub, err := fetch.PublicKeyForKeyID(r.Context(), h.fetchClient, h.fetchPolicy, keyID, h.cfg)
 	if err != nil {
 		http.Error(w, "could not resolve actor signing key", http.StatusUnauthorized)
 		return
@@ -353,49 +367,6 @@ func isActivityJSONContentType(ct string) bool {
 	return base == "application/activity+json" || base == "application/ld+json"
 }
 
-// GetOutbox returns an OrderedCollection of outbound activity IRIs for the local user (newest first).
-func (h *Handler) GetOutbox(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	if h.cfg.PublicBaseURL == "" || h.st == nil || len(h.localActorIDs) == 0 {
-		http.Error(w, "server not configured", http.StatusServiceUnavailable)
-		return
-	}
-	username := r.PathValue("username")
-	if username == "" || !h.cfg.IsLocalUsername(username) {
-		http.NotFound(w, r)
-		return
-	}
-	actorID, ok := h.localActorIDs[username]
-	if !ok || actorID == 0 {
-		http.Error(w, "server not configured", http.StatusServiceUnavailable)
-		return
-	}
-	total, items, err := store.OutboxPage(r.Context(), h.st.Pool, actorID, 50)
-	if err != nil {
-		http.Error(w, "outbox", http.StatusInternalServerError)
-		return
-	}
-	base := strings.TrimRight(h.cfg.PublicBaseURL, "/")
-	collID := base + "/outbox/" + url.PathEscape(username)
-	doc := map[string]any{
-		"@context":     "https://www.w3.org/ns/activitystreams",
-		"id":           collID,
-		"type":         "OrderedCollection",
-		"totalItems":   total,
-		"orderedItems": items,
-	}
-	accept := r.Header.Get("Accept")
-	if strings.Contains(accept, "application/activity+json") || strings.Contains(accept, "application/ld+json") {
-		w.Header().Set("Content-Type", "application/activity+json; charset=utf-8")
-	} else {
-		w.Header().Set("Content-Type", "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"; charset=utf-8")
-	}
-	_ = json.NewEncoder(w).Encode(doc)
-}
-
 func jsonStringField(m map[string]json.RawMessage, key string) (string, error) {
 	raw, ok := m[key]
 	if !ok {
@@ -460,16 +431,16 @@ func signingActorMatchesKeyID(keyID, actorIRI string) bool {
 // Mount registers routes on mux. basePath is typically empty (Host root).
 func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /.well-known/webfinger", h.WebFinger)
-	mux.HandleFunc("GET /users/", func(w http.ResponseWriter, r *http.Request) {
-		if strings.Count(strings.TrimSuffix(r.URL.Path, "/"), "/") > 1 {
-			http.NotFound(w, r)
-			return
-		}
-		h.GetActor(w, r)
-	})
-	mux.HandleFunc("GET /outbox/{username}", h.GetOutbox)
-	mux.HandleFunc("POST /outbox/{username}", h.PostOutbox)
+	mux.HandleFunc("GET /.well-known/actor", h.GetInstanceActor)
+	mux.HandleFunc("GET /actor", h.RedirectInstanceActorAlias)
+
+	mux.HandleFunc("POST /media", h.PostMediaUpload)
+	mux.HandleFunc("GET /media/{key...}", h.GetMedia)
+
 	mux.HandleFunc("POST /inbox", h.SharedInbox)
+
+	// Resolve any path to persisted activity_id / object_url (local actors only). Must stay last among GET routes in this mux.
+	mux.HandleFunc("GET /{path...}", h.GetActivityOrObject)
 }
 
 // Health is a no-op liveness handler.

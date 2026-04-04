@@ -76,7 +76,7 @@ func localProfileFetchClient(baseURL string) *http.Client {
 	base := strings.TrimRight(baseURL, "/")
 	return &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		u := req.URL.String()
-		if strings.HasPrefix(u, base+"/users/") {
+		if strings.HasPrefix(u, base+"/@") {
 			doc := map[string]any{"id": u, "inbox": base + "/inbox"}
 			b, err := json.Marshal(doc)
 			if err != nil {
@@ -123,7 +123,7 @@ func TestIntegration_inboundFollow_autoAcceptsAndEnqueuesAcceptDelivery(t *testi
 	applyTestingFetchPolicy(h)
 	h.fetchClient = fix.Client
 
-	aliceProfile := "https://integration.test/users/alice"
+	aliceProfile := cfg.LocalActorProfileURL("alice")
 	remoteActor := strings.TrimSuffix(fix.KeyID, "#main-key")
 	followID := "https://remote.test/activities/follow-1"
 	body := mustJSON(t, map[string]any{
@@ -216,7 +216,7 @@ func TestIntegration_inboundFollow_noAutoAccept_staysPending(t *testing.T) {
 	applyTestingFetchPolicy(h)
 	h.fetchClient = fix.Client
 
-	aliceProfile := "https://integration.test/users/alice"
+	aliceProfile := cfg.LocalActorProfileURL("alice")
 	remoteActor := strings.TrimSuffix(fix.KeyID, "#main-key")
 	followID := "https://remote.test/activities/follow-2"
 	body := mustJSON(t, map[string]any{
@@ -291,17 +291,16 @@ func TestIntegration_outboundFollow_localFollowee_enqueuesProcessInbox_andAccept
 	body := mustJSON(t, map[string]any{
 		"type":   "Follow",
 		"id":     followID,
-		"actor":  "https://integration.test/users/alice",
-		"object": "https://integration.test/users/bob",
-		"to":     "https://integration.test/users/bob",
+		"actor":  cfg.LocalActorProfileURL("alice"),
+		"object": cfg.LocalActorProfileURL("bob"),
+		"to":     cfg.LocalActorProfileURL("bob"),
 	})
-	mux := http.NewServeMux()
-	h.Mount(mux)
-	req := httptest.NewRequest(http.MethodPost, "https://integration.test/outbox/alice", bytes.NewReader(body))
+	th := testMounted(h)
+	req := httptest.NewRequest(http.MethodPost, "https://integration.test/@alice/outbox", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+secret)
 	req.Header.Set("Content-Type", "application/activity+json")
 	rr := httptest.NewRecorder()
-	mux.ServeHTTP(rr, req)
+	th.ServeHTTP(rr, req)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status %d %s", rr.Code, rr.Body.String())
 	}
@@ -382,17 +381,16 @@ func TestIntegration_outboundFollow_remoteRecordsPendingRemote_andDelivers(t *te
 	body := mustJSON(t, map[string]any{
 		"type":   "Follow",
 		"id":     followID,
-		"actor":  "https://integration.test/users/alice",
+		"actor":  cfg.LocalActorProfileURL("alice"),
 		"to":     remote.URL + "/users/remote",
 		"object": remote.URL + "/users/remote",
 	})
-	mux := http.NewServeMux()
-	h.Mount(mux)
-	req := httptest.NewRequest(http.MethodPost, "https://integration.test/outbox/alice", bytes.NewReader(body))
+	th := testMounted(h)
+	req := httptest.NewRequest(http.MethodPost, "https://integration.test/@alice/outbox", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+secret)
 	req.Header.Set("Content-Type", "application/activity+json")
 	rr := httptest.NewRecorder()
-	mux.ServeHTTP(rr, req)
+	th.ServeHTTP(rr, req)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status %d %s", rr.Code, rr.Body.String())
 	}
@@ -590,22 +588,21 @@ func TestIntegration_postOutbox_undoDeletesPendingRemote(t *testing.T) {
 	}
 	applyTestingFetchPolicy(h)
 	h.fetchClient = remote.Client()
-	mux := http.NewServeMux()
-	h.Mount(mux)
+	th := testMounted(h)
 
 	followID := "https://integration.test/activities/alice-follows-remote-uf"
 	followBody := mustJSON(t, map[string]any{
 		"type":   "Follow",
 		"id":     followID,
-		"actor":  "https://integration.test/users/alice",
+		"actor":  cfg.LocalActorProfileURL("alice"),
 		"to":     remote.URL + "/users/remote",
 		"object": remote.URL + "/users/remote",
 	})
-	req := httptest.NewRequest(http.MethodPost, "https://integration.test/outbox/alice", bytes.NewReader(followBody))
+	req := httptest.NewRequest(http.MethodPost, "https://integration.test/@alice/outbox", bytes.NewReader(followBody))
 	req.Header.Set("Authorization", "Bearer "+secret)
 	req.Header.Set("Content-Type", "application/activity+json")
 	rr := httptest.NewRecorder()
-	mux.ServeHTTP(rr, req)
+	th.ServeHTTP(rr, req)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("follow: status %d %s", rr.Code, rr.Body.String())
 	}
@@ -623,14 +620,14 @@ func TestIntegration_postOutbox_undoDeletesPendingRemote(t *testing.T) {
 	undoBody := mustJSON(t, map[string]any{
 		"type":   "Undo",
 		"id":     undoID,
-		"actor":  "https://integration.test/users/alice",
+		"actor":  cfg.LocalActorProfileURL("alice"),
 		"object": followID,
 	})
-	req2 := httptest.NewRequest(http.MethodPost, "https://integration.test/outbox/alice", bytes.NewReader(undoBody))
+	req2 := httptest.NewRequest(http.MethodPost, "https://integration.test/@alice/outbox", bytes.NewReader(undoBody))
 	req2.Header.Set("Authorization", "Bearer "+secret)
 	req2.Header.Set("Content-Type", "application/activity+json")
 	rr2 := httptest.NewRecorder()
-	mux.ServeHTTP(rr2, req2)
+	th.ServeHTTP(rr2, req2)
 	if rr2.Code != http.StatusAccepted {
 		t.Fatalf("undo: status %d %s", rr2.Code, rr2.Body.String())
 	}

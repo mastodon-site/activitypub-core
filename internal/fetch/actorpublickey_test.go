@@ -48,7 +48,7 @@ func TestPublicKeyForKeyID(t *testing.T) {
 
 	client := srv.Client()
 	keyID := srv.URL + "/users/alice#main-key"
-	got, err := PublicKeyForKeyID(context.Background(), client, LaxPolicyForTests(), keyID)
+	got, err := PublicKeyForKeyID(context.Background(), client, LaxPolicyForTests(), keyID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestPublicKeyForKeyID_keyIdMismatch(t *testing.T) {
 
 	client := srv.Client()
 	wrongKey := srv.URL + "/users/bob#main-key"
-	if _, err := PublicKeyForKeyID(context.Background(), client, LaxPolicyForTests(), wrongKey); err == nil {
+	if _, err := PublicKeyForKeyID(context.Background(), client, LaxPolicyForTests(), wrongKey, nil); err == nil {
 		t.Fatal("expected error when publicKey.id does not match keyId")
 	}
 }
@@ -96,7 +96,7 @@ func TestPublicKeyForKeyID_nonOKStatus(t *testing.T) {
 	defer srv.Close()
 
 	client := srv.Client()
-	if _, err := PublicKeyForKeyID(context.Background(), client, LaxPolicyForTests(), srv.URL+"/users/x#main"); err == nil {
+	if _, err := PublicKeyForKeyID(context.Background(), client, LaxPolicyForTests(), srv.URL+"/users/x#main", nil); err == nil {
 		t.Fatal("expected error on 404")
 	}
 }
@@ -129,7 +129,7 @@ func TestPublicKeyForKeyID_rejectsDisallowedHostUnderStrictPolicy(t *testing.T) 
 
 	strict := &Policy{}
 	keyID := srv.URL + "/users/alice#main-key"
-	if _, err := PublicKeyForKeyID(context.Background(), srv.Client(), strict, keyID); err == nil {
+	if _, err := PublicKeyForKeyID(context.Background(), srv.Client(), strict, keyID, nil); err == nil {
 		t.Fatal("strict policy must reject httptest loopback keyId before any useful fetch")
 	}
 }

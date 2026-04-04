@@ -18,9 +18,11 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/mastodon-site/activitypub-core/aphttp"
+	"github.com/mastodon-site/activitypub-core/blobs"
 	fsblob "github.com/mastodon-site/activitypub-core/blobs/fs"
 	s3blob "github.com/mastodon-site/activitypub-core/blobs/s3"
 	"github.com/mastodon-site/activitypub-core/internal/config"
+	"github.com/mastodon-site/activitypub-core/mastodonapi"
 	"github.com/mastodon-site/activitypub-core/migrate"
 	"github.com/mastodon-site/activitypub-core/observability"
 	"github.com/mastodon-site/activitypub-core/queue"
@@ -79,18 +81,21 @@ func main() {
 		log.Fatal("AP_DATABASE_URL set but queue backend is sql without postgres pool — check AP_QUEUE_BACKEND")
 	}
 
-	// Optional: verify blob backend config (construct but do not serve yet).
-	_ = mustBlobStore(ctx, cfg)
+	var blobStore blobs.Store
+	blobStore = mustBlobStore(ctx, cfg)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health/live", aphttp.Health)
 	mux.Handle("GET /health/ready", observability.InstrumentHandler("health_ready", http.HandlerFunc(aphttp.Ready(st))))
 
-	ap, err := aphttp.New(cfg, aphttp.Deps{Store: st, Queue: qBackend})
+	ap, err := aphttp.New(cfg, aphttp.Deps{Store: st, Queue: qBackend, Blobs: blobStore})
 	if err != nil {
 		log.Fatalf("aphttp: %v", err)
 	}
 	ap.Mount(mux)
+	if st != nil {
+		mastodonapi.Mount(mux, ap, st.Pool)
+	}
 
 	// Metrics on same mux unless separate listener configured separately (TODO split server if AP_METRICS_LISTEN set).
 	mux.Handle("GET /metrics", observability.MetricsHandler())
@@ -100,7 +105,7 @@ func main() {
 		log.Printf("AP_METRICS_LISTEN set to %q — metrics still on main mux; split listener not implemented in bootstrap", cfg.MetricsListen)
 	}
 
-	handler := observability.InstrumentHandler("http", mux)
+	handler := observability.InstrumentHandler("http", ap.WithLegacy(ap.WithAtPaths(mux)))
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -125,7 +130,7 @@ func main() {
 	_ = srv.Shutdown(shCtx)
 }
 
-func mustBlobStore(ctx context.Context, cfg *config.Config) any {
+func mustBlobStore(ctx context.Context, cfg *config.Config) blobs.Store {
 	switch cfg.BlobBackend {
 	case "filesystem":
 		if err := os.MkdirAll(cfg.BlobFSRoot, 0o755); err != nil {
@@ -156,6 +161,7 @@ func mustBlobStore(ctx context.Context, cfg *config.Config) any {
 		})
 		return s3blob.New(cli, cfg.BlobS3Bucket)
 	default:
-		return nil
+		log.Fatalf("unknown blob backend")
+		panic("unreachable")
 	}
 }

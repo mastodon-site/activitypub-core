@@ -61,7 +61,7 @@ func TestDeliverActivity_POSTsValidSignature(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := deliverActivity(context.Background(), cfg, testClient, raw); err != nil {
+	if err := deliverActivity(context.Background(), cfg, nil, testClient, raw); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -69,7 +69,7 @@ func TestDeliverActivity_POSTsValidSignature(t *testing.T) {
 func TestDeliverActivity_requiresKeys(t *testing.T) {
 	cfg := &config.Config{PublicBaseURL: "https://x"}
 	raw, _ := json.Marshal(deliverPayload{InboxURL: "http://y", Body: json.RawMessage(`{}`)})
-	if err := deliverActivity(context.Background(), cfg, nil, raw); err == nil {
+	if err := deliverActivity(context.Background(), cfg, nil, nil, raw); err == nil {
 		t.Fatal("expected error without private key path")
 	}
 }

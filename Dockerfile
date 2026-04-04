@@ -1,61 +1,16 @@
-# Build stage
-FROM golang:1.26-alpine AS builder
-
-RUN apk add --no-cache git ca-certificates tzdata
-
-WORKDIR /app
-
+# Build: docker build -t activitypub-core .
+# Runtime command is overridden (e.g. apd, apw) via compose or `docker run ... apw`.
+FROM golang:1.25-alpine AS build
+WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
-
 COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/apd ./cmd/apd && \
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/apw ./cmd/apw && \
+	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/apadmin ./cmd/apadmin
 
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
-    -ldflags="-s -w" \
-    -o /out/apd ./cmd/apd && \
-    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
-    -ldflags="-s -w" \
-    -o /out/apw ./cmd/apw
-
-# API daemon
-FROM alpine:3.23 AS apd
-
-RUN apk --no-cache add ca-certificates tzdata && \
-    addgroup -g 1001 -S activitypub && \
-    adduser -u 1001 -S activitypub -G activitypub
-
-WORKDIR /app
-
-COPY --from=builder /out/apd /app/apd
-COPY --from=builder /app/db/migrations /app/db/migrations
-RUN chown -R activitypub:activitypub /app/apd /app/db
-
-USER activitypub
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates tzdata
+COPY --from=build /out/apd /out/apw /out/apadmin /usr/local/bin/
 EXPOSE 8080
-
-LABEL org.opencontainers.image.source="https://github.com/mastodon-site/activitypub-core" \
-    org.opencontainers.image.description="activitypub-core API daemon (apd)"
-
-ENTRYPOINT ["/app/apd"]
-
-# Background worker
-FROM alpine:3.23 AS apw
-
-RUN apk --no-cache add ca-certificates tzdata && \
-    addgroup -g 1001 -S activitypub && \
-    adduser -u 1001 -S activitypub -G activitypub
-
-WORKDIR /app
-
-COPY --from=builder /out/apw /app/apw
-COPY --from=builder /app/db/migrations /app/db/migrations
-RUN chown -R activitypub:activitypub /app/apw /app/db
-
-USER activitypub
-
-LABEL org.opencontainers.image.source="https://github.com/mastodon-site/activitypub-core" \
-    org.opencontainers.image.description="activitypub-core worker (apw)"
-
-ENTRYPOINT ["/app/apw"]
+CMD ["apd"]

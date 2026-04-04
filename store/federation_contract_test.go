@@ -50,7 +50,7 @@ func findMigrationsDir(t *testing.T) string {
 func truncateAll(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
-	_, err := pool.Exec(ctx, `TRUNCATE TABLE queue_jobs, deliveries, follows, activities, objects, actors RESTART IDENTITY CASCADE`)
+	_, err := pool.Exec(ctx, `TRUNCATE TABLE queue_jobs, deliveries, follows, federated_likes, federated_announces, federated_blocks, activities, objects, actors RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestIntegration_OutboxPage_respectsLimitCap(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	total, items, err := OutboxPage(ctx, pool, localID, 9999)
+	total, items, _, err := OutboxPage(ctx, pool, localID, 9999, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

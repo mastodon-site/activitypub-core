@@ -27,6 +27,10 @@ go.work.sum
 # env file
 .env
 
+# Local signing keys (docker-compose mounts private.pem)
+private.pem
+*.pem
+
 # Editor/IDE
 # .idea/
 # .vscode/
