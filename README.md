@@ -58,6 +58,14 @@ docker compose up --build
 
 Override **`AP_PUBLIC_BASE_URL`** (and optionally **`AP_LOCAL_USERNAMES`**) when invoking compose, e.g. `AP_PUBLIC_BASE_URL=https://your-host.example docker compose up`.
 
+### Publishing container images (maintainers)
+
+CI only **builds** images for validation. **GHCR publishes** run from [`.github/workflows/release.yml`](.github/workflows/release.yml):
+
+1. Create a **GitHub Release** from a semver tag (`vMAJOR.MINOR.PATCH`). Publishing the release builds and pushes **`ghcr.io/<owner>/activitypub-core-apd`** and **`activitypub-core-apw`** with tags `v*`, `major.minor`, and `latest`.
+2. Package visibility must allow the org/registry to pull (default `GITHUB_TOKEN` needs **packages: write** for this repo—already set on the workflow).
+3. To rebuild after a fix, re-run the failed jobs on the release workflow, or delete and re-publish the GitHub Release for that tag (avoid reusing a tag for different commits).
+
 ### `apw`
 
 When **`AP_WORKER_METRICS_LISTEN`** is non-empty, a small HTTP server is started on that address:
