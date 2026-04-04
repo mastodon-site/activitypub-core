@@ -531,3 +531,179 @@ func TestIntegration_ProcessInboxActivity_activityMissingAllTypes_errors(t *test
 		t.Fatalf("expected missing type error, got %v", err)
 	}
 }
+
+func TestIntegration_Block_skippedWhenOnlyRemoteAddressing(t *testing.T) {
+	ctx, pool := testPool(t)
+	cfg := &config.Config{PublicBaseURL: "https://blkrem.test", LocalUsernames: []string{"bob"}, LocalUsername: "bob"}
+	blocker, err := store.EnsureRemoteActor(ctx, pool, "https://remote.test/users/blockonly", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := map[string]any{
+		"id":     "https://remote.test/act/block-only-remote-to",
+		"type":   "Block",
+		"actor":  "https://remote.test/users/blockonly",
+		"to":     []string{"https://somewhere.else.test/users/nobody"},
+		"object": "https://evil.test/users/jerk",
+	}
+	raw, err := json.Marshal(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ins, bid, err := store.InsertInboundActivity(ctx, pool, blocker, "https://remote.test/act/block-only-remote-to", "Block", raw)
+	if err != nil || !ins {
+		t.Fatal(err)
+	}
+	if err := ProcessInboxActivity(ctx, pool, discardQueue{}, cfg, nil, bid, nil); err != nil {
+		t.Fatal(err)
+	}
+	var cnt int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM federated_blocks`).Scan(&cnt); err != nil {
+		t.Fatal(err)
+	}
+	if cnt != 0 {
+		t.Fatalf("expected block skipped when not addressed to instance, got %d rows", cnt)
+	}
+}
+
+func TestIntegration_Block_appliesWhenAddressedToSharedInbox(t *testing.T) {
+	ctx, pool := testPool(t)
+	cfg := &config.Config{PublicBaseURL: "https://blksh.test", LocalUsernames: []string{"bob"}, LocalUsername: "bob"}
+	blocker, err := store.EnsureRemoteActor(ctx, pool, "https://remote.test/users/blocker2", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	block := map[string]any{
+		"id":     "https://remote.test/act/block-sh",
+		"type":   "Block",
+		"actor":  "https://remote.test/users/blocker2",
+		"to":     []string{cfg.LocalSharedInboxURL()},
+		"object": "https://evil.test/users/jerk2",
+	}
+	raw, err := json.Marshal(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ins, bid, err := store.InsertInboundActivity(ctx, pool, blocker, "https://remote.test/act/block-sh", "Block", raw)
+	if err != nil || !ins {
+		t.Fatal(err)
+	}
+	if err := ProcessInboxActivity(ctx, pool, discardQueue{}, cfg, nil, bid, nil); err != nil {
+		t.Fatal(err)
+	}
+	var cnt int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM federated_blocks`).Scan(&cnt); err != nil {
+		t.Fatal(err)
+	}
+	if cnt != 1 {
+		t.Fatalf("federated_blocks %d", cnt)
+	}
+}
+
+func TestIntegration_Create_addressedViaMastodonUsersPath(t *testing.T) {
+	ctx, pool := testPool(t)
+	cfg := &config.Config{PublicBaseURL: "https://mastopath.test", LocalUsernames: []string{"bob"}, LocalUsername: "bob"}
+	if _, err := store.EnsureLocalActor(ctx, pool, cfg, "bob", "k"); err != nil {
+		t.Fatal(err)
+	}
+	rid, err := store.EnsureRemoteActor(ctx, pool, "https://remote.test/users/a", "pem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	note := map[string]any{
+		"id":           "https://remote.test/o/mastopath",
+		"type":         "Note",
+		"attributedTo": "https://remote.test/users/a",
+	}
+	noteRaw, _ := json.Marshal(note)
+	insertProcess(t, ctx, pool, cfg, rid, "https://remote.test/act/cmasto", "Create", map[string]any{
+		"id":     "https://remote.test/act/cmasto",
+		"type":   "Create",
+		"actor":  "https://remote.test/users/a",
+		"to":     []string{"https://mastopath.test/users/bob"},
+		"object": json.RawMessage(noteRaw),
+	})
+	var cnt int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM objects WHERE object_url = $1`, "https://remote.test/o/mastopath").Scan(&cnt); err != nil {
+		t.Fatal(err)
+	}
+	if cnt != 1 {
+		t.Fatalf("objects %d", cnt)
+	}
+}
+
+func TestIntegration_Create_and_Like_fromLocalActor(t *testing.T) {
+	ctx, pool := testPool(t)
+	cfg := &config.Config{PublicBaseURL: "https://localact.test", LocalUsernames: []string{"bob"}, LocalUsername: "bob"}
+	bobID, err := store.EnsureLocalActor(ctx, pool, cfg, "bob", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := cfg.LocalActorProfileURL("bob")
+	note := map[string]any{
+		"id":           "https://localact.test/o/bob-note",
+		"type":         "Note",
+		"attributedTo": profile,
+		"content":      "from bob",
+	}
+	noteRaw, _ := json.Marshal(note)
+	insertProcess(t, ctx, pool, cfg, bobID, "https://localact.test/act/c1", "Create", map[string]any{
+		"id":     "https://localact.test/act/c1",
+		"type":   "Create",
+		"actor":  profile,
+		"to":     []string{cfg.LocalSharedInboxURL()},
+		"object": json.RawMessage(noteRaw),
+	})
+	var cnt int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM objects WHERE object_url = $1`, "https://localact.test/o/bob-note").Scan(&cnt); err != nil {
+		t.Fatal(err)
+	}
+	if cnt != 1 {
+		t.Fatalf("create object rows %d", cnt)
+	}
+	insertProcess(t, ctx, pool, cfg, bobID, "https://localact.test/act/like1", "Like", map[string]any{
+		"id":     "https://localact.test/act/like1",
+		"type":   "Like",
+		"actor":  profile,
+		"to":     []string{cfg.LocalSharedInboxURL()},
+		"object": "https://localact.test/o/bob-note",
+	})
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM federated_likes`).Scan(&cnt); err != nil {
+		t.Fatal(err)
+	}
+	if cnt != 1 {
+		t.Fatalf("likes %d", cnt)
+	}
+}
+
+func TestIntegration_Follow_objectUsesMastodonUsersPath(t *testing.T) {
+	ctx, pool := testPool(t)
+	cfg := &config.Config{
+		PublicBaseURL:    "https://flo.test",
+		LocalUsernames:   []string{"bob"},
+		LocalUsername:    "bob",
+		FollowAutoAccept: false,
+	}
+	bobID, err := store.EnsureLocalActor(ctx, pool, cfg, "bob", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	allyID, err := store.EnsureRemoteActor(ctx, pool, "https://remote.test/users/ally", "pem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertProcess(t, ctx, pool, cfg, allyID, "https://remote.test/act/f-users", "Follow", map[string]any{
+		"id":     "https://remote.test/act/f-users",
+		"type":   "Follow",
+		"actor":  "https://remote.test/users/ally",
+		"to":     []string{cfg.LocalActorProfileURL("bob")},
+		"object": "https://flo.test/users/bob",
+	})
+	var cnt int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM follows WHERE follower_actor_id = $1 AND followee_actor_id = $2`, allyID, bobID).Scan(&cnt); err != nil {
+		t.Fatal(err)
+	}
+	if cnt != 1 {
+		t.Fatalf("follow rows %d", cnt)
+	}
+}

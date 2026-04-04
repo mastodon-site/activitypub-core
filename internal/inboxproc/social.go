@@ -34,13 +34,16 @@ func handleAnnounce(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config,
 	return store.UpsertFederatedAnnounce(ctx, pool, row.ActorID, objectURL, row.ActivityID)
 }
 
-func handleBlock(ctx context.Context, pool *pgxpool.Pool, row *store.ActivityRow, fields map[string]json.RawMessage) error {
+func handleBlock(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config, row *store.ActivityRow, fields map[string]json.RawMessage) error {
 	blockedURL, err := as2.ObjectIRI(fields)
 	if err != nil {
 		return err
 	}
 	if blockedURL == "" {
 		return fmt.Errorf("block: empty object")
+	}
+	if !activityShouldApplySideEffects(cfg, fields) {
+		return nil
 	}
 	return store.UpsertFederatedBlock(ctx, pool, row.ActorID, blockedURL, row.ActivityID)
 }
