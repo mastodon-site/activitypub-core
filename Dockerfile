@@ -20,7 +20,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -o /out/apw ./cmd/apw
 
 # API daemon
-FROM alpine:3.21 AS apd
+FROM alpine:3.23 AS apd
 
 RUN apk --no-cache add ca-certificates tzdata && \
     addgroup -g 1001 -S activitypub && \
@@ -41,7 +41,7 @@ LABEL org.opencontainers.image.source="https://github.com/mastodon-site/activity
 ENTRYPOINT ["/app/apd"]
 
 # Background worker
-FROM alpine:3.21 AS apw
+FROM alpine:3.23 AS apw
 
 RUN apk --no-cache add ca-certificates tzdata && \
     addgroup -g 1001 -S activitypub && \
