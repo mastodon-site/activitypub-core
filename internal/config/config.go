@@ -189,6 +189,42 @@ func (c *Config) LocalActorFollowingURL(username string) string {
 	return root + "/@" + url.PathEscape(username) + "/following"
 }
 
+// IsLocalActorFollowersOrFollowingCollectionIRI reports whether ref is this instance's followers or
+// following collection for a configured local user. These are OrderedCollection documents, not Actor;
+// they must not be passed to inbox resolution (no "inbox" property).
+func (c *Config) IsLocalActorFollowersOrFollowingCollectionIRI(ref string) bool {
+	if c == nil || strings.TrimSpace(c.PublicBaseURL) == "" {
+		return false
+	}
+	wantU, err := url.Parse(strings.TrimSpace(ref))
+	if err != nil || wantU.Host == "" {
+		return false
+	}
+	baseU, err := url.Parse(strings.TrimRight(c.PublicBaseURL, "/"))
+	if err != nil || baseU.Hostname() == "" {
+		return false
+	}
+	if !strings.EqualFold(wantU.Hostname(), baseU.Hostname()) {
+		return false
+	}
+	wantPath := strings.Trim(wantU.Path, "/")
+	usernames := c.LocalUsernames
+	if len(usernames) == 0 && strings.TrimSpace(c.LocalUsername) != "" {
+		usernames = []string{c.LocalUsername}
+	}
+	for _, u := range usernames {
+		fu, err := url.Parse(c.LocalActorFollowersURL(u))
+		if err == nil && strings.Trim(fu.Path, "/") == wantPath {
+			return true
+		}
+		flu, err := url.Parse(c.LocalActorFollowingURL(u))
+		if err == nil && strings.Trim(flu.Path, "/") == wantPath {
+			return true
+		}
+	}
+	return false
+}
+
 // LocalActorInboxURL returns the per-actor inbox IRI (POST target). Shared delivery still uses endpoints.sharedInbox.
 func (c *Config) LocalActorInboxURL(username string) string {
 	root := strings.TrimRight(c.PublicBaseURL, "/")

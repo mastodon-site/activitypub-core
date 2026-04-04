@@ -446,6 +446,10 @@ func resolveDeliveryInboxes(ctx context.Context, client *http.Client, policy *fe
 		if skipAudienceEntry(e) {
 			continue
 		}
+		if cfg != nil && cfg.IsLocalActorFollowersOrFollowingCollectionIRI(e) {
+			// Followers/following are Collections; fan-out uses individual actor IRIs merged into cc.
+			continue
+		}
 		inbox, err := fetch.InboxURLFromReference(ctx, client, policy, e, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", e, err)

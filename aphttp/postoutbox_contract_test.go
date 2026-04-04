@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mastodon-site/activitypub-core/internal/config"
+	"github.com/mastodon-site/activitypub-core/internal/fetch"
 	"github.com/mastodon-site/activitypub-core/migrate"
 	"github.com/mastodon-site/activitypub-core/queue"
 	"github.com/mastodon-site/activitypub-core/store"
@@ -150,5 +151,31 @@ func TestContract_PostOutbox_enqueuesDeliver_integration(t *testing.T) {
 	}
 	if payload.InboxURL != resolvedInbox {
 		t.Fatalf("inbox %q want %q", payload.InboxURL, resolvedInbox)
+	}
+}
+
+func TestContract_resolveDeliveryInboxes_skipsLocalFollowersAndFollowingCollections(t *testing.T) {
+	cfg := &config.Config{
+		PublicBaseURL:  "https://integration.test",
+		LocalUsername:  "admin",
+		LocalUsernames: []string{"admin"},
+	}
+	cc, err := json.Marshal([]string{
+		cfg.LocalActorFollowersURL("admin"),
+		cfg.LocalActorFollowingURL("admin"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := map[string]json.RawMessage{
+		"to": json.RawMessage(`"https://www.w3.org/ns/activitystreams#Public"`),
+		"cc": cc,
+	}
+	inboxes, err := resolveDeliveryInboxes(context.Background(), http.DefaultClient, fetch.TestingPolicy(), cfg, raw, cfg.LocalSharedInboxURL())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inboxes) != 0 {
+		t.Fatalf("Collections are not actors; expected no inbox fetches, got %v", inboxes)
 	}
 }
