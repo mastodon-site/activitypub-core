@@ -143,7 +143,7 @@ func TestContract_nodeInfoDiscovery_and20(t *testing.T) {
 
 type queueNoop struct{}
 
-func (queueNoop) Enqueue(ctx context.Context, job queue.Job) error   { return nil }
-func (queueNoop) Dequeue(ctx context.Context) (*queue.Lease, error)    { return nil, nil }
-func (queueNoop) Ack(ctx context.Context, id64 int64) error            { return nil }
+func (queueNoop) Enqueue(ctx context.Context, job queue.Job) error         { return nil }
+func (queueNoop) Dequeue(ctx context.Context) (*queue.Lease, error)        { return nil, nil }
+func (queueNoop) Ack(ctx context.Context, id64 int64) error                { return nil }
 func (queueNoop) Nack(ctx context.Context, id64 int64, requeue bool) error { return nil }
