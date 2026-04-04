@@ -102,6 +102,14 @@ func main() {
 		log.Fatalf("unknown queue backend %q", cfg.QueueBackend)
 	}
 
+	// Match apd: config env may omit OAuth/bootstrapped users; inbox follow handling uses
+	// cfg.LocalUsernameForInboundFollowObject, which requires merged LocalUsernames.
+	if pgPool != nil {
+		if err := store.AugmentLocalUsernamesFromDB(ctx, pgPool, cfg); err != nil {
+			log.Fatalf("augment local usernames: %v", err)
+		}
+	}
+
 	go func() {
 		addr := os.Getenv("AP_WORKER_METRICS_LISTEN")
 		if addr == "" {
