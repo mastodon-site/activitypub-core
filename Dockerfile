@@ -9,18 +9,18 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/apd ./cmd/apd && \
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/apw ./cmd/apw && \
 	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/apadmin ./cmd/apadmin
 
-FROM alpine:3.21 AS apd
+FROM alpine:3.23 AS apd
 RUN apk add --no-cache ca-certificates tzdata
 COPY --from=build /out/apd /app/apd
 EXPOSE 8080
 CMD ["/app/apd"]
 
-FROM alpine:3.21 AS apw
+FROM alpine:3.23 AS apw
 RUN apk add --no-cache ca-certificates tzdata
 COPY --from=build /out/apw /app/apw
 CMD ["/app/apw"]
 
-FROM alpine:3.21
+FROM alpine:3.23
 RUN apk add --no-cache ca-certificates tzdata
 COPY --from=build /out/apd /out/apw /out/apadmin /usr/local/bin/
 EXPOSE 8080
