@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -426,6 +427,54 @@ func signingActorMatchesKeyID(keyID, actorIRI string) bool {
 	}
 	k.Fragment, a.Fragment = "", ""
 	return strings.TrimRight(k.String(), "/") == strings.TrimRight(a.String(), "/")
+}
+
+func (h *Handler) primaryLocalUsername() string {
+	if len(h.cfg.LocalUsernames) > 0 {
+		return h.cfg.LocalUsernames[0]
+	}
+	return h.cfg.LocalUsername
+}
+
+// GetRoot handles GET / so the public origin is not a 404. Typical browsers get a minimal HTML page; JSON-oriented Accept headers are redirected to the primary local actor document.
+func (h *Handler) GetRoot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	if strings.TrimSpace(h.cfg.PublicBaseURL) == "" {
+		http.Error(w, "not configured", http.StatusServiceUnavailable)
+		return
+	}
+	user := h.primaryLocalUsername()
+	if strings.TrimSpace(user) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	prof := h.cfg.LocalActorProfileURL(user)
+	acc := strings.ToLower(r.Header.Get("Accept"))
+	wantHTML := acc == "" ||
+		(strings.Contains(acc, "text/html") &&
+			!strings.Contains(acc, "application/json") &&
+			!strings.Contains(acc, "application/activity+json") &&
+			!strings.Contains(acc, "application/ld+json"))
+	if wantHTML {
+		host := strings.TrimPrefix(strings.TrimPrefix(strings.TrimSpace(h.cfg.PublicBaseURL), "https://"), "http://")
+		host = strings.TrimSuffix(host, "/")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprintf(w, `<!DOCTYPE html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>%s</title>`+
+			`<p><strong>%s</strong> — ActivityPub (activitypub-core)</p>`+
+			`<ul><li><a href="%s">Local profile (@%s)</a></li>`+
+			`<li><a href="/.well-known/actor">Instance actor</a></li></ul>`,
+			host, host, prof, html.EscapeString(user))
+		return
+	}
+	http.Redirect(w, r, prof, http.StatusFound)
 }
 
 // Mount registers routes on mux. basePath is typically empty (Host root).
