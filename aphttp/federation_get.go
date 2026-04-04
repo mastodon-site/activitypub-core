@@ -1,11 +1,51 @@
 package aphttp
 
 import (
+	"fmt"
+	"html"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/mastodon-site/activitypub-core/store"
 )
+
+// prefersHTMLCatchall reports whether the client likely wants a browser page rather than ActivityPub JSON.
+func prefersHTMLCatchall(r *http.Request) bool {
+	acc := strings.ToLower(r.Header.Get("Accept"))
+	if acc == "" {
+		return true
+	}
+	if strings.Contains(acc, "text/html") &&
+		!strings.Contains(acc, "application/json") &&
+		!strings.Contains(acc, "application/activity+json") &&
+		!strings.Contains(acc, "application/ld+json") {
+		return true
+	}
+	return false
+}
+
+func (h *Handler) publicHostname() string {
+	u, err := url.Parse(strings.TrimSpace(h.cfg.PublicBaseURL))
+	if err != nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
+// serveCatchallHostHTML is a minimal HTML response with the instance hostname (unknown paths for browsers).
+func (h *Handler) serveCatchallHostHTML(w http.ResponseWriter) {
+	host := h.publicHostname()
+	if host == "" {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	esc := html.EscapeString(host)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprintf(w, `<!DOCTYPE html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>%s</title><h1>%s</h1>`,
+		esc, esc)
+}
 
 // canonicalIRICandidates builds possible ActivityPub IRIs for a request path using
 // AP_PUBLIC_BASE_URL as origin (trailing slash variants).
@@ -44,6 +84,8 @@ func canonicalIRICandidates(publicBaseURL, requestPath string) []string {
 // GetActivityOrObject serves GET for any path that matches a stored activity_id or object_url
 // owned by a configured local actor. Register as the last GET route (e.g. GET /{path...}) so
 // well-known, /@handle, /media, etc. remain authoritative.
+//
+// GET / is delegated to GetRoot (cannot register both GET / and GET /{path...} on Go 1.22+ ServeMux).
 func (h *Handler) GetActivityOrObject(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -55,12 +97,15 @@ func (h *Handler) GetActivityOrObject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if h.st == nil || strings.TrimSpace(h.cfg.PublicBaseURL) == "" {
-		http.NotFound(w, r)
+	p := r.URL.Path
+	if p == "" {
+		p = "/"
+	}
+	if p == "/" {
+		h.GetRoot(w, r)
 		return
 	}
-	p := r.URL.Path
-	if p == "" || p == "/" {
+	if h.st == nil || strings.TrimSpace(h.cfg.PublicBaseURL) == "" {
 		http.NotFound(w, r)
 		return
 	}
@@ -96,6 +141,10 @@ func (h *Handler) GetActivityOrObject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeActivityStreamsJSON(w, r, raw)
+		return
+	}
+	if prefersHTMLCatchall(r) {
+		h.serveCatchallHostHTML(w)
 		return
 	}
 	http.NotFound(w, r)

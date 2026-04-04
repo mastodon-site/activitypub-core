@@ -479,7 +479,6 @@ func (h *Handler) GetRoot(w http.ResponseWriter, r *http.Request) {
 
 // Mount registers routes on mux. basePath is typically empty (Host root).
 func (h *Handler) Mount(mux *http.ServeMux) {
-	mux.HandleFunc("GET /", h.GetRoot)
 	mux.HandleFunc("GET /.well-known/webfinger", h.WebFinger)
 	mux.HandleFunc("GET /.well-known/actor", h.GetInstanceActor)
 	mux.HandleFunc("GET /actor", h.RedirectInstanceActorAlias)
