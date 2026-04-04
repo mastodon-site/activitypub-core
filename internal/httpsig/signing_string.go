@@ -27,6 +27,9 @@ func BuildSigningString(r *http.Request, headerNames []string) (string, error) {
 		}
 		can := http.CanonicalHeaderKey(lower)
 		vals := r.Header.Values(can)
+		if len(vals) == 0 && lower == "host" && r.Host != "" {
+			vals = []string{r.Host}
+		}
 		if len(vals) == 0 {
 			return "", fmt.Errorf("missing signed header %q", name)
 		}
