@@ -15,11 +15,23 @@ import (
 // Handler bundles AP HTTP handlers for mounting on the API mux.
 type Handler struct {
 	cfg *config.Config
+	// actorPublicKeyPEM is PKIX PEM for JSON-LD publicKey.publicKeyPem; empty means use stub in GetActor.
+	actorPublicKeyPEM string
 }
 
 // New creates AP HTTP handlers. cfg.PublicBaseURL must be set for meaningful responses.
-func New(cfg *config.Config) *Handler {
-	return &Handler{cfg: cfg}
+// If cfg sets actor key paths, the PEM for the actor document is loaded at startup.
+func New(cfg *config.Config) (*Handler, error) {
+	h := &Handler{cfg: cfg}
+	if cfg.ActorPrivateKeyPath == "" {
+		return h, nil
+	}
+	pub, err := loadActorPublicKeyPEM(cfg)
+	if err != nil {
+		return nil, err
+	}
+	h.actorPublicKeyPEM = pub
+	return h, nil
 }
 
 // WebFinger handles GET /.well-known/webfinger?resource=acct:user@host
@@ -99,8 +111,11 @@ func (h *Handler) GetActor(w http.ResponseWriter, r *http.Request) {
 	profile := base + "/users/" + url.PathEscape(username)
 	inbox := base + "/inbox"
 	outbox := base + "/outbox/" + url.PathEscape(username)
-	// Placeholder key: real implementation loads from DB and signs with PEM.
 	keyID := profile + "#main-key"
+	publicPEM := h.actorPublicKeyPEM
+	if publicPEM == "" {
+		publicPEM = "-----BEGIN PUBLIC KEY-----\n(stub — set AP_ACTOR_PRIVATE_KEY_PATH)\n-----END PUBLIC KEY-----\n"
+	}
 	actor := map[string]any{
 		"@context": []any{
 			"https://www.w3.org/ns/activitystreams",
@@ -114,8 +129,8 @@ func (h *Handler) GetActor(w http.ResponseWriter, r *http.Request) {
 		"publicKey": map[string]any{
 			"id":           keyID,
 			"owner":        profile,
-			"type":         "key",
-			"publicKeyPem": "-----BEGIN PUBLIC KEY-----\n(stub — replace with real RSA key from store)\n-----END PUBLIC KEY-----\n",
+			"type":         "Key",
+			"publicKeyPem": publicPEM,
 		},
 	}
 	accept := r.Header.Get("Accept")
