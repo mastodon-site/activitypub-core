@@ -79,6 +79,18 @@ func PublicKeyPEMFromPrivate(priv *rsa.PrivateKey) (string, error) {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})), nil
 }
 
+// PublicKeyPEMFromRSA returns PKIX PEM text for an RSA public key (e.g. remote signers).
+func PublicKeyPEMFromRSA(pub *rsa.PublicKey) (string, error) {
+	if pub == nil {
+		return "", fmt.Errorf("nil public key")
+	}
+	der, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		return "", fmt.Errorf("marshal public key: %w", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})), nil
+}
+
 // ActorPublicKeyPEMForConfig returns PKIX PEM for the actor JSON document (public key file optional).
 func ActorPublicKeyPEMForConfig(cfg *config.Config) (string, error) {
 	if cfg.ActorPrivateKeyPath == "" {

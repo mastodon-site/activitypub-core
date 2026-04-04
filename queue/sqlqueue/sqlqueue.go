@@ -37,6 +37,20 @@ func (s *SQL) Enqueue(ctx context.Context, job queue.Job) error {
 	return err
 }
 
+// EnqueueTx inserts a pending job inside an existing transaction (pair with inbound activity insert).
+func (s *SQL) EnqueueTx(ctx context.Context, tx pgx.Tx, job queue.Job) error {
+	runAt := job.RunAfter
+	if runAt.IsZero() {
+		runAt = time.Now().UTC()
+	}
+	key := job.IdempotencyKey
+	_, err := tx.Exec(ctx, `
+		INSERT INTO queue_jobs (job_type, payload, idempotency_key, status, run_after)
+		VALUES ($1, $2, NULLIF($3, ''), 'pending', $4)
+	`, string(job.Type), job.Payload, key, runAt)
+	return err
+}
+
 // Dequeue claims the next due job.
 func (s *SQL) Dequeue(ctx context.Context) (*queue.Lease, error) {
 	tx, err := s.pool.Begin(ctx)

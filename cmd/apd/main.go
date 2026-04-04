@@ -15,12 +15,17 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/mastodon-site/activitypub-core/aphttp"
 	fsblob "github.com/mastodon-site/activitypub-core/blobs/fs"
 	s3blob "github.com/mastodon-site/activitypub-core/blobs/s3"
 	"github.com/mastodon-site/activitypub-core/internal/config"
 	"github.com/mastodon-site/activitypub-core/migrate"
 	"github.com/mastodon-site/activitypub-core/observability"
+	"github.com/mastodon-site/activitypub-core/queue"
+	"github.com/mastodon-site/activitypub-core/queue/redisqueue"
+	"github.com/mastodon-site/activitypub-core/queue/sqlqueue"
 	"github.com/mastodon-site/activitypub-core/store"
 	"github.com/mastodon-site/activitypub-core/store/postgres"
 )
@@ -50,6 +55,30 @@ func main() {
 		}
 	}
 
+	var qBackend queue.Backend
+	switch cfg.QueueBackend {
+	case "sql":
+		if st != nil {
+			qBackend = sqlqueue.New(st.Pool)
+		}
+	case "redis":
+		if cfg.RedisURL == "" {
+			log.Fatal("AP_REDIS_URL required for redis queue backend")
+		}
+		opt, err := redis.ParseURL(cfg.RedisURL)
+		if err != nil {
+			log.Fatalf("redis url: %v", err)
+		}
+		rdb := redis.NewClient(opt)
+		defer rdb.Close()
+		qBackend = redisqueue.New(rdb)
+	default:
+		log.Fatalf("unknown queue backend %q", cfg.QueueBackend)
+	}
+	if st != nil && qBackend == nil {
+		log.Fatal("AP_DATABASE_URL set but queue backend is sql without postgres pool — check AP_QUEUE_BACKEND")
+	}
+
 	// Optional: verify blob backend config (construct but do not serve yet).
 	_ = mustBlobStore(ctx, cfg)
 
@@ -57,7 +86,7 @@ func main() {
 	mux.HandleFunc("GET /health/live", aphttp.Health)
 	mux.Handle("GET /health/ready", observability.InstrumentHandler("health_ready", http.HandlerFunc(aphttp.Ready(st))))
 
-	ap, err := aphttp.New(cfg)
+	ap, err := aphttp.New(cfg, aphttp.Deps{Store: st, Queue: qBackend})
 	if err != nil {
 		log.Fatalf("aphttp: %v", err)
 	}
