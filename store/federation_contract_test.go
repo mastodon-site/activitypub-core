@@ -83,6 +83,52 @@ func TestIntegration_EnsureLocalActor_returnsStableID(t *testing.T) {
 	}
 }
 
+func TestIntegration_EnsureLocalActor_migratesLegacyActorURL(t *testing.T) {
+	ctx := context.Background()
+	dsn := testDatabaseURL(t)
+	if err := migrate.Up(dsn, findMigrationsDir(t)); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	truncateAll(t, pool)
+
+	base := "https://legacy-actor.test"
+	cfg := &config.Config{PublicBaseURL: base, LocalUsernames: []string{"admin"}, LocalUsername: "admin"}
+	legacyProfile := base + "/users/admin"
+	legacyOutbox := base + "/outbox/admin"
+	_, err = pool.Exec(ctx, `
+		INSERT INTO actors (username, domain, actor_url, inbox_url, outbox_url, public_key_pem)
+		VALUES ($1, 'legacy-actor.test', $2, $3, $4, 'legacy-pem')`,
+		"admin", legacyProfile, base+"/inbox", legacyOutbox)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	id, err := EnsureLocalActor(ctx, pool, cfg, "admin", "new-pem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotURL, gotOutbox, gotPem string
+	err = pool.QueryRow(ctx, `SELECT actor_url, outbox_url, public_key_pem FROM actors WHERE id = $1`, id).
+		Scan(&gotURL, &gotOutbox, &gotPem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := cfg.LocalActorProfileURL("admin"); gotURL != want {
+		t.Fatalf("actor_url got %q want %q", gotURL, want)
+	}
+	if want := cfg.LocalActorOutboxURL("admin"); gotOutbox != want {
+		t.Fatalf("outbox_url got %q want %q", gotOutbox, want)
+	}
+	if gotPem != "new-pem" {
+		t.Fatalf("public_key_pem got %q", gotPem)
+	}
+}
+
 func TestIntegration_OutboxPage_respectsLimitCap(t *testing.T) {
 	ctx := context.Background()
 	dsn := testDatabaseURL(t)

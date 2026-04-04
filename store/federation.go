@@ -52,10 +52,11 @@ func UpsertLocalActor(ctx context.Context, pool dbQueryRow, cfg *config.Config, 
 	err = pool.QueryRow(ctx, `
 		INSERT INTO actors (username, domain, actor_url, inbox_url, outbox_url, public_key_pem)
 		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (actor_url) DO UPDATE SET
-			public_key_pem = EXCLUDED.public_key_pem,
+		ON CONFLICT (username, domain) DO UPDATE SET
+			actor_url = EXCLUDED.actor_url,
 			inbox_url = EXCLUDED.inbox_url,
 			outbox_url = EXCLUDED.outbox_url,
+			public_key_pem = EXCLUDED.public_key_pem,
 			updated_at = now()
 		RETURNING id
 	`, username, domain, actorURL, inboxURL, outboxURL, pem).Scan(&id)
