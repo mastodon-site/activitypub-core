@@ -1,6 +1,6 @@
 # Default: docker build -t activitypub-core .  → all binaries on PATH, CMD apd
 # Per-binary: docker build --target apd|apw -t ...  → /app/apd or /app/apw (see CI pr-checks.yml)
-FROM golang:1.25-alpine AS build
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
