@@ -29,7 +29,8 @@ RUN apk --no-cache add ca-certificates tzdata && \
 WORKDIR /app
 
 COPY --from=builder /out/apd /app/apd
-RUN chown activitypub:activitypub /app/apd
+COPY --from=builder /app/db/migrations /app/db/migrations
+RUN chown -R activitypub:activitypub /app/apd /app/db
 
 USER activitypub
 EXPOSE 8080
@@ -49,7 +50,8 @@ RUN apk --no-cache add ca-certificates tzdata && \
 WORKDIR /app
 
 COPY --from=builder /out/apw /app/apw
-RUN chown activitypub:activitypub /app/apw
+COPY --from=builder /app/db/migrations /app/db/migrations
+RUN chown -R activitypub:activitypub /app/apw /app/db
 
 USER activitypub
 
