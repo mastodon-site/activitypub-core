@@ -22,8 +22,10 @@ services:
       retries: 10
 
   apd:
-    build: .
-    command: ["apd"]
+    build:
+      context: .
+      target: apd
+    command: ["/app/apd"]
     ports:
       - "8080:8080"
     environment:
@@ -42,8 +44,10 @@ services:
         condition: service_healthy
 
   apw:
-    build: .
-    command: ["apw"]
+    build:
+      context: .
+      target: apw
+    command: ["/app/apw"]
     environment:
       AP_DATABASE_URL: postgres://ap:ap@db:5432/ap?sslmode=disable
       AP_QUEUE_BACKEND: sql
