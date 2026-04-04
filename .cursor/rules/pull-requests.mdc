@@ -1,0 +1,18 @@
+---
+description: PR conventions including semver labels
+alwaysApply: true
+---
+
+# Pull Requests
+
+When creating a pull request with `gh pr create`, always add a semver label:
+
+- **patch** — bug fixes, typos, config corrections, non-functional changes
+- **minor** — new features, endpoints, or backwards-compatible enhancements
+- **major** — breaking changes to APIs, database schemas requiring migration, or removed functionality
+
+Use `--label <label>` on the `gh pr create` command. Pick exactly one of `patch`, `minor`, or `major`.
+
+```bash
+gh pr create --title "..." --body "..." --label minor
+```
