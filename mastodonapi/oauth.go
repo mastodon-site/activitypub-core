@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"html"
 	"html/template"
 	"net/http"
 	"net/url"
@@ -25,29 +26,37 @@ func oauthTokenError(w http.ResponseWriter, status int, errCode, description str
 	})
 }
 
+// oauthAuthorizeHTML serves text/html for browser OAuth steps (not JSON).
+func oauthAuthorizeHTML(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = fmt.Fprintf(w, `<!DOCTYPE html><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Authorize</title><p>%s</p>`,
+		html.EscapeString(message))
+}
+
 func (s *Server) getOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		oauthAuthorizeHTML(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 	q := r.URL.Query()
 	if q.Get("response_type") != "code" {
-		http.Error(w, "response_type code required", http.StatusBadRequest)
+		oauthAuthorizeHTML(w, http.StatusBadRequest, "response_type must be code")
 		return
 	}
 	clientID := q.Get("client_id")
 	redirectURI := q.Get("redirect_uri")
 	if clientID == "" || redirectURI == "" {
-		http.Error(w, "client_id and redirect_uri required", http.StatusBadRequest)
+		oauthAuthorizeHTML(w, http.StatusBadRequest, "client_id and redirect_uri are required")
 		return
 	}
 	app, err := store.OAuthApplicationByClientID(r.Context(), s.Pool, clientID)
 	if err != nil {
-		http.Error(w, "unknown client", http.StatusBadRequest)
+		oauthAuthorizeHTML(w, http.StatusBadRequest, "Unknown client_id")
 		return
 	}
 	if !store.RedirectURIAllowed(app.RedirectURIs, redirectURI) {
-		http.Error(w, "invalid redirect_uri", http.StatusBadRequest)
+		oauthAuthorizeHTML(w, http.StatusBadRequest, "Invalid redirect_uri")
 		return
 	}
 	host := s.instanceHost()
@@ -84,11 +93,11 @@ const oauthFormHTML = `<!DOCTYPE html>
 
 func (s *Server) postOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		oauthAuthorizeHTML(w, http.StatusMethodNotAllowed, "Method not allowed")
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
+		oauthAuthorizeHTML(w, http.StatusBadRequest, "Invalid form")
 		return
 	}
 	clientID := r.FormValue("client_id")
@@ -102,17 +111,17 @@ func (s *Server) postOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 
 	app, err := store.OAuthApplicationByClientID(r.Context(), s.Pool, clientID)
 	if err != nil {
-		http.Error(w, "unknown client", http.StatusBadRequest)
+		oauthAuthorizeHTML(w, http.StatusBadRequest, "Unknown client_id")
 		return
 	}
 	if !store.RedirectURIAllowed(app.RedirectURIs, redirectURI) {
-		http.Error(w, "invalid redirect_uri", http.StatusBadRequest)
+		oauthAuthorizeHTML(w, http.StatusBadRequest, "Invalid redirect_uri")
 		return
 	}
 	dom := s.instanceHost()
 	actorID, err := store.AuthenticateLocalAccount(r.Context(), s.Pool, dom, username, password)
 	if err != nil {
-		http.Error(w, "invalid credentials", http.StatusUnauthorized)
+		oauthAuthorizeHTML(w, http.StatusUnauthorized, "Invalid username or password")
 		return
 	}
 	if scope == "" {
@@ -120,12 +129,12 @@ func (s *Server) postOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 	}
 	code, err := store.InsertAuthorizationCode(r.Context(), s.Pool, app.ID, actorID, redirectURI, scope, chal, chalMeth)
 	if err != nil {
-		http.Error(w, "could not create code", http.StatusInternalServerError)
+		oauthAuthorizeHTML(w, http.StatusInternalServerError, "Could not create authorization code")
 		return
 	}
 	u, err := url.Parse(redirectURI)
 	if err != nil {
-		http.Error(w, "bad redirect", http.StatusBadRequest)
+		oauthAuthorizeHTML(w, http.StatusBadRequest, "Invalid redirect URI")
 		return
 	}
 	q := u.Query()

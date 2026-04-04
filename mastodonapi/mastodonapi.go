@@ -33,8 +33,18 @@ func Mount(mux *http.ServeMux, h *aphttp.Handler, pool *pgxpool.Pool) {
 		return
 	}
 	s := &Server{H: h, Pool: pool}
+
+	// Instance & discovery (Mastodon 3.x / 4.x clients probe v1 and v2).
 	mux.HandleFunc("GET /api/v1/instance", s.getInstance)
+	mux.HandleFunc("GET /api/v2/instance", s.getInstanceV2)
+	mux.HandleFunc("GET /api/v1/instance/extended_description", s.getInstanceExtendedDescription)
+	mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.getOAuthAuthorizationServer)
+
 	mux.HandleFunc("POST /api/v1/apps", s.postApps)
+	mux.HandleFunc("GET /api/v1/custom_emojis", s.getCustomEmojis)
+	mux.HandleFunc("GET /api/v1/announcements", s.getAnnouncements)
+	mux.HandleFunc("GET /api/v1/preferences", s.bearer(s.getPreferences))
+
 	mux.HandleFunc("GET /api/v1/accounts/verify_credentials", s.bearer(s.getVerifyCredentials))
 	mux.HandleFunc("POST /api/v1/statuses", s.bearer(s.postStatuses))
 	mux.HandleFunc("GET /api/v1/accounts/search", s.getAccountSearch)
@@ -84,42 +94,11 @@ func (s *Server) bearer(next func(http.ResponseWriter, *http.Request, int64)) ht
 	return func(w http.ResponseWriter, r *http.Request) {
 		aid, ok := s.actorIDFromBearer(r)
 		if !ok {
-			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+			writeAPIError(w, http.StatusUnauthorized, "The access token is invalid")
 			return
 		}
 		next(w, r, aid)
 	}
-}
-
-func (s *Server) getInstance(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	c := s.cfg()
-	host := s.instanceHost()
-	if host == "" {
-		http.Error(w, "not configured", http.StatusServiceUnavailable)
-		return
-	}
-	out := map[string]any{
-		"uri":               host,
-		"title":             host,
-		"short_description": "",
-		"description":       "",
-		"email":             "",
-		"version":           "4.2.0+activitypub-core",
-		"urls":              map[string]any{},
-		"domain":            host,
-		"contact_account":   nil,
-		"rules":             []any{},
-	}
-	// Some clients expect `uri` as full URL — include both shapes they probe.
-	if c.PublicBaseURL != "" {
-		out["uri"] = strings.TrimRight(c.PublicBaseURL, "/")
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(w).Encode(out)
 }
 
 type appsAppJSON struct {
@@ -156,15 +135,17 @@ func (s *Server) postApps(w http.ResponseWriter, r *http.Request) {
 		redirectFirst = parts[0]
 	}
 	out := map[string]any{
-		"id":            strconv.FormatInt(app.ID, 10),
-		"name":          app.ClientName,
-		"website":       app.Website,
-		"redirect_uri":  redirectFirst,
-		"client_id":     app.ClientID,
-		"client_secret": app.ClientSecret,
-		"vapid_key":     "",
+		"id":             strconv.FormatInt(app.ID, 10),
+		"name":           app.ClientName,
+		"website":        app.Website,
+		"redirect_uri":   redirectFirst,
+		"redirect_uris":  strings.TrimSpace(raw.RedirectURIs),
+		"client_id":      app.ClientID,
+		"client_secret":  app.ClientSecret,
+		"vapid_key":      "",
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(out)
 }
 
@@ -174,39 +155,44 @@ func (s *Server) accountMap(ctx context.Context, actorID int64) (map[string]any,
 		return nil, err
 	}
 	return map[string]any{
-		"id":              strconv.FormatInt(id, 10),
-		"username":        uname,
-		"acct":            fmt.Sprintf("%s@%s", uname, dom),
-		"display_name":    uname,
-		"locked":          false,
-		"bot":             false,
-		"created_at":      created.UTC().Format(time.RFC3339),
-		"note":            "",
-		"url":             profile,
-		"avatar":          "",
-		"avatar_static":   "",
-		"header":          "",
-		"header_static":   "",
-		"followers_count": 0,
-		"following_count": 0,
-		"statuses_count":  0,
-		"last_status_at":  nil,
-		"emojis":          []any{},
-		"fields":          []any{},
+		"id":               strconv.FormatInt(id, 10),
+		"username":         uname,
+		"acct":             fmt.Sprintf("%s@%s", uname, dom),
+		"display_name":     uname,
+		"locked":           false,
+		"bot":              false,
+		"discoverable":     false,
+		"group":            false,
+		"noindex":          false,
+		"created_at":       created.UTC().Format(time.RFC3339),
+		"note":             "",
+		"url":              profile,
+		"avatar":           "",
+		"avatar_static":    "",
+		"header":           "",
+		"header_static":    "",
+		"followers_count":  0,
+		"following_count":  0,
+		"statuses_count":   0,
+		"last_status_at":   nil,
+		"emojis":           []any{},
+		"fields":           []any{},
+		"roles":            []any{},
 	}, nil
 }
 
 func (s *Server) getVerifyCredentials(w http.ResponseWriter, r *http.Request, actorID int64) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	m, err := s.accountMap(r.Context(), actorID)
 	if err != nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, "Record not found")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(m)
 }
 
@@ -217,16 +203,16 @@ type statusCreateJSON struct {
 
 func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID int64) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	uname, _, _, _, _, err := store.ActorForMastodon(r.Context(), s.Pool, actorID)
 	if err != nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, "Record not found")
 		return
 	}
 	if !s.H.IsLocalActor(uname) {
-		http.Error(w, "not a local account", http.StatusForbidden)
+		writeAPIError(w, http.StatusForbidden, "not a local account")
 		return
 	}
 	ct := r.Header.Get("Content-Type")
@@ -234,20 +220,20 @@ func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID in
 	if strings.Contains(strings.ToLower(ct), "application/json") {
 		var body statusCreateJSON
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
-			http.Error(w, "invalid json", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
 		text = body.Status
 	} else {
 		if err := r.ParseForm(); err != nil {
-			http.Error(w, "invalid form", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "invalid form")
 			return
 		}
 		text = r.FormValue("status")
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
-		http.Error(w, "status required", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "Validation failed: Text can't be blank")
 		return
 	}
 	root := strings.TrimRight(s.cfg().PublicBaseURL, "/")
@@ -274,11 +260,11 @@ func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID in
 	}
 	raw, err := json.Marshal(create)
 	if err != nil {
-		http.Error(w, "internal", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "could not build activity")
 		return
 	}
 	if err := s.H.PublishLocalActivityBytes(r.Context(), uname, raw); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	// Minimal Status entity (enough for Ivory to treat as success).
@@ -328,18 +314,19 @@ func newIRI(root, kind string) string {
 
 func (s *Server) getTimelineHome(w http.ResponseWriter, r *http.Request, actorID int64) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	_ = actorID
 	out := []any{}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(out)
 }
 
 func (s *Server) getAccountSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
@@ -481,6 +468,9 @@ func (s *Server) accountFromActorURL(ctx context.Context, actorURL string) (map[
 		"display_name":    stringField(doc, "name"),
 		"locked":          false,
 		"bot":             false,
+		"discoverable":    false,
+		"group":           false,
+		"noindex":         false,
 		"created_at":      time.Now().UTC().Format(time.RFC3339),
 		"note":            stringField(doc, "summary"),
 		"url":             actorURL,
@@ -491,6 +481,10 @@ func (s *Server) accountFromActorURL(ctx context.Context, actorURL string) (map[
 		"followers_count": 0,
 		"following_count": 0,
 		"statuses_count":  0,
+		"last_status_at":  nil,
+		"emojis":          []any{},
+		"fields":          []any{},
+		"roles":           []any{},
 	}, nil
 }
 
@@ -503,27 +497,27 @@ func stringField(doc map[string]any, k string) string {
 
 func (s *Server) postAccountFollow(w http.ResponseWriter, r *http.Request, actorID int64) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	rawID := r.PathValue("id")
 	targetID, err := strconv.ParseInt(rawID, 10, 64)
 	if err != nil || targetID < 1 {
-		http.Error(w, "invalid id", http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "invalid id")
 		return
 	}
 	targetURL, _, _, err := store.ActorProfileByID(r.Context(), s.Pool, targetID)
 	if err != nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, "Record not found")
 		return
 	}
 	uname, _, _, _, _, err := store.ActorForMastodon(r.Context(), s.Pool, actorID)
 	if err != nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		writeAPIError(w, http.StatusNotFound, "Record not found")
 		return
 	}
 	if !s.H.IsLocalActor(uname) {
-		http.Error(w, "not a local account", http.StatusForbidden)
+		writeAPIError(w, http.StatusForbidden, "not a local account")
 		return
 	}
 	prof := s.cfg().LocalActorProfileURL(uname)
@@ -538,11 +532,11 @@ func (s *Server) postAccountFollow(w http.ResponseWriter, r *http.Request, actor
 	}
 	rawFollow, err := json.Marshal(followMap)
 	if err != nil {
-		http.Error(w, "internal", http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "could not build activity")
 		return
 	}
 	if err := s.H.PublishLocalActivityBytes(r.Context(), uname, rawFollow); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	out := map[string]any{
@@ -561,5 +555,6 @@ func (s *Server) postAccountFollow(w http.ResponseWriter, r *http.Request, actor
 		"account":              nil,
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(out)
 }

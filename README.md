@@ -19,7 +19,13 @@ Served on **`AP_HTTP_LISTEN`** (default `:8080`). Unless noted, paths are rooted
 | `/media` | `POST` | Media upload (when configured). |
 | `/media/{key...}` | `GET` | Fetch uploaded blob by key. |
 | `/inbox` | `POST` | Shared inbox: verify HTTP Signatures + Digest, persist activity, enqueue `process_inbox_activity` when DB and queue are configured. |
-| `/api/v1/instance` | `GET` | Minimal Mastodon instance metadata (Ivory / client probes). |
+| `/api/v1/instance` | `GET` | Mastodon-style instance metadata (Ivory / legacy clients). |
+| `/api/v2/instance` | `GET` | Mastodon 4.x instance entity (configuration, `api_versions`, etc.). |
+| `/api/v1/instance/extended_description` | `GET` | Empty extended description JSON (client probes). |
+| `/.well-known/oauth-authorization-server` | `GET` | OAuth 2.0 Authorization Server Metadata (RFC 8414); discovery for `/oauth/*`. |
+| `/api/v1/custom_emojis` | `GET` | Empty array `[]` (emoji catalog stub). |
+| `/api/v1/announcements` | `GET` | Empty array `[]` (announcements stub). |
+| `/api/v1/preferences` | `GET` | Minimal preferences object (`Bearer`; stub values). |
 | `/api/v1/apps` | `POST` | Register OAuth application (Mastodon-style). |
 | `/oauth/authorize` | `GET`, `POST` | Browser login; issues authorization `code`. |
 | `/oauth/token` | `POST` | Exchange `code` for `access_token` (`grant_type=authorization_code`, PKCE supported). |
