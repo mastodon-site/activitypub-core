@@ -3,11 +3,16 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -18,7 +23,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/mastodon-site/activitypub-core/internal/actorkey"
 	"github.com/mastodon-site/activitypub-core/internal/config"
+	"github.com/mastodon-site/activitypub-core/internal/httpsig"
 	"github.com/mastodon-site/activitypub-core/migrate"
 	"github.com/mastodon-site/activitypub-core/queue"
 	"github.com/mastodon-site/activitypub-core/queue/redisqueue"
@@ -101,14 +108,14 @@ func main() {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			workerLoop(ctx, id, q, cfg.WorkerPollInterval)
+			workerLoop(ctx, id, q, cfg, cfg.WorkerPollInterval)
 		}(i)
 	}
 	wg.Wait()
 	log.Println("apw shut down")
 }
 
-func workerLoop(ctx context.Context, id int, q queue.Backend, poll time.Duration) {
+func workerLoop(ctx context.Context, id int, q queue.Backend, cfg *config.Config, poll time.Duration) {
 	log.Printf("worker %d started", id)
 	for {
 		select {
@@ -126,7 +133,7 @@ func workerLoop(ctx context.Context, id int, q queue.Backend, poll time.Duration
 			time.Sleep(poll)
 			continue
 		}
-		if err := processJob(ctx, lease); err != nil {
+		if err := processJob(ctx, cfg, lease); err != nil {
 			jobsProcessed.WithLabelValues(string(lease.Type), "error").Inc()
 			log.Printf("worker %d job %d failed: %v", id, lease.ID, err)
 			_ = q.Nack(ctx, lease.ID, true)
@@ -139,16 +146,56 @@ func workerLoop(ctx context.Context, id int, q queue.Backend, poll time.Duration
 	}
 }
 
-func processJob(ctx context.Context, lease *queue.Lease) error {
-	_ = ctx
+func processJob(ctx context.Context, cfg *config.Config, lease *queue.Lease) error {
 	switch lease.Type {
 	case queue.TypeNoop:
 		return nil
 	case queue.TypeDeliverActivity:
-		log.Printf("deliver_activity (stub): %s", string(lease.Payload))
-		return nil
+		return deliverActivity(ctx, cfg, lease.Payload)
 	default:
 		log.Printf("unknown job type %q — acknowledging", lease.Type)
 		return nil
 	}
+}
+
+type deliverPayload struct {
+	InboxURL string          `json:"inboxUrl"`
+	Body     json.RawMessage `json:"body"`
+}
+
+func deliverActivity(ctx context.Context, cfg *config.Config, raw json.RawMessage) error {
+	if cfg.ActorPrivateKeyPath == "" {
+		return fmt.Errorf("AP_ACTOR_PRIVATE_KEY_PATH required for deliver_activity")
+	}
+	if cfg.PublicBaseURL == "" {
+		return fmt.Errorf("AP_PUBLIC_BASE_URL required for deliver_activity (keyId)")
+	}
+	priv, err := actorkey.LoadPrivateKeyFromFile(cfg.ActorPrivateKeyPath)
+	if err != nil {
+		return err
+	}
+	var p deliverPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return fmt.Errorf("deliver_activity payload: %w", err)
+	}
+	if p.InboxURL == "" || len(p.Body) == 0 {
+		return fmt.Errorf("deliver_activity: inboxUrl and body required")
+	}
+	keyID := strings.TrimRight(cfg.PublicBaseURL, "/") + "/users/" + url.PathEscape(cfg.LocalUsername) + "#main-key"
+	req, err := httpsig.NewSignedPost(p.InboxURL, p.Body, keyID, priv)
+	if err != nil {
+		return err
+	}
+	req = req.WithContext(ctx)
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		slurp, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("delivery POST %s: %s", resp.Status, strings.TrimSpace(string(slurp)))
+	}
+	return nil
 }
