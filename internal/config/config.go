@@ -27,6 +27,9 @@ type Config struct {
 	ActorPrivateKeyPath string
 	ActorPublicKeyPath  string
 
+	// InboxMaxBody is the max bytes read for POST /inbox (HTTP Signature + activity body).
+	InboxMaxBody int
+
 	BlobBackend    string
 	BlobFSRoot     string
 	BlobS3Bucket   string
@@ -49,6 +52,7 @@ func Load() (*Config, error) {
 		LocalUsername:       getenv("AP_LOCAL_USERNAME", "admin"),
 		ActorPrivateKeyPath: os.Getenv("AP_ACTOR_PRIVATE_KEY_PATH"),
 		ActorPublicKeyPath:  os.Getenv("AP_ACTOR_PUBLIC_KEY_PATH"),
+		InboxMaxBody:        getenvInt("AP_INBOX_MAX_BODY_BYTES", 1<<20),
 		BlobBackend:         strings.ToLower(getenv("AP_BLOB_BACKEND", "filesystem")),
 		BlobFSRoot:          getenv("AP_BLOB_FS_ROOT", "./blobdata"),
 		BlobS3Bucket:        os.Getenv("AP_BLOB_S3_BUCKET"),

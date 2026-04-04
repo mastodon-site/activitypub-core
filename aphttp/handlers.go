@@ -5,11 +5,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
+	"github.com/mastodon-site/activitypub-core/internal/actorkey"
 	"github.com/mastodon-site/activitypub-core/internal/config"
+	"github.com/mastodon-site/activitypub-core/internal/fetch"
+	"github.com/mastodon-site/activitypub-core/internal/httpsig"
 )
 
 // Handler bundles AP HTTP handlers for mounting on the API mux.
@@ -17,16 +22,27 @@ type Handler struct {
 	cfg *config.Config
 	// actorPublicKeyPEM is PKIX PEM for JSON-LD publicKey.publicKeyPem; empty means use stub in GetActor.
 	actorPublicKeyPEM string
+	fetchClient       *http.Client
+	inboxMaxBody      int
 }
 
 // New creates AP HTTP handlers. cfg.PublicBaseURL must be set for meaningful responses.
 // If cfg sets actor key paths, the PEM for the actor document is loaded at startup.
 func New(cfg *config.Config) (*Handler, error) {
-	h := &Handler{cfg: cfg}
+	h := &Handler{
+		cfg: cfg,
+		fetchClient: &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				Proxy: http.ProxyFromEnvironment,
+			},
+		},
+		inboxMaxBody: cfg.InboxMaxBody,
+	}
 	if cfg.ActorPrivateKeyPath == "" {
 		return h, nil
 	}
-	pub, err := loadActorPublicKeyPEM(cfg)
+	pub, err := actorkey.ActorPublicKeyPEMForConfig(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -142,13 +158,64 @@ func (h *Handler) GetActor(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(actor)
 }
 
-// Placeholder inbox — Accept activity+json POST (verify in later milestone).
+// SharedInbox accepts signed ActivityPub POSTs (Digest + HTTP Signatures rsa-sha256 + remote keyId resolution).
 func (h *Handler) SharedInbox(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	ct := r.Header.Get("Content-Type")
+	if !isActivityJSONContentType(ct) {
+		http.Error(w, "unsupported content type", http.StatusUnsupportedMediaType)
+		return
+	}
+	max := h.inboxMaxBody
+	if max <= 0 {
+		max = 1 << 20
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, int64(max)+1))
+	if err != nil {
+		http.Error(w, "read body", http.StatusBadRequest)
+		return
+	}
+	if len(body) > max {
+		http.Error(w, "payload too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	sigHdr := r.Header.Get("Signature")
+	if sigHdr == "" {
+		http.Error(w, "missing Signature header", http.StatusUnauthorized)
+		return
+	}
+	params, err := httpsig.ParseSignatureHeader(sigHdr)
+	if err != nil {
+		http.Error(w, "invalid Signature header", http.StatusUnauthorized)
+		return
+	}
+	keyID := params["keyid"]
+	if keyID == "" {
+		http.Error(w, "missing keyId in signature", http.StatusUnauthorized)
+		return
+	}
+	pub, err := fetch.PublicKeyForKeyID(r.Context(), h.fetchClient, keyID)
+	if err != nil {
+		http.Error(w, "could not resolve actor signing key", http.StatusUnauthorized)
+		return
+	}
+	if err := httpsig.VerifyRequest(r, body, pub); err != nil {
+		http.Error(w, "invalid digest or HTTP signature", http.StatusUnauthorized)
+		return
+	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+func isActivityJSONContentType(ct string) bool {
+	ct = strings.ToLower(strings.TrimSpace(ct))
+	if ct == "" {
+		return false
+	}
+	return strings.Contains(ct, "application/activity+json") ||
+		strings.Contains(ct, "application/ld+json")
 }
 
 // Mount registers routes on mux. basePath is typically empty (Host root).
