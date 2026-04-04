@@ -112,6 +112,7 @@ func TestContract_PostOutbox_enqueuesDeliver_integration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyTestingFetchPolicy(h)
 	h.fetchClient = remote.Client()
 
 	body, err := json.Marshal(map[string]any{

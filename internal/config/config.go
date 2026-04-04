@@ -36,6 +36,10 @@ type Config struct {
 	// InboxMaxBody is the max bytes read for POST /inbox (HTTP Signature + activity body).
 	InboxMaxBody int
 
+	// FetchAllowHTTP allows http:// for outbound federation fetches (AP_FETCH_ALLOW_HTTP).
+	// Default false: HTTPS only (recommended on the public internet).
+	FetchAllowHTTP bool
+
 	// OutboxPostSecret, if set, enables POST /outbox/{user} with Authorization: Bearer <secret>.
 	OutboxPostSecret string
 
@@ -100,7 +104,16 @@ func Load() (*Config, error) {
 		c.FollowAutoAccept = false
 	}
 
+	if truthyEnv("AP_FETCH_ALLOW_HTTP") {
+		c.FetchAllowHTTP = true
+	}
+
 	return c, nil
+}
+
+func truthyEnv(key string) bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	return v == "1" || v == "true" || v == "yes"
 }
 
 // IsLocalUsername reports whether name is one of this server's actor accounts.

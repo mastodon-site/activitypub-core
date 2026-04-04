@@ -11,13 +11,24 @@ import (
 	"strings"
 )
 
+// maxInboxResolutionSteps caps HTTP GET actor-document hops when resolving an inbox
+// (each hop follows actor JSON "inbox" to the next URL). Must be positive.
+const maxInboxResolutionSteps = 5
+
 type actorInboxDoc struct {
 	Inbox string `json:"inbox"`
 }
 
-// InboxURLFromReference returns a shared-inbox HTTPS URL.
+// InboxURLFromReference returns a shared-inbox URL for delivery.
 // If ref already points at an inbox path, it is normalized; otherwise the actor document is fetched.
-func InboxURLFromReference(ctx context.Context, client *http.Client, ref string) (string, error) {
+// policy propagates SSRF checks (use PolicyFromConfig or TestingPolicy in tests).
+//
+// Resolution is bounded by maxInboxResolutionSteps fetches and by a cycle check on canonical URLs.
+func InboxURLFromReference(ctx context.Context, client *http.Client, policy *Policy, ref string) (string, error) {
+	return inboxURLFromReference(ctx, client, policy, ref, 0, make(map[string]struct{}))
+}
+
+func inboxURLFromReference(ctx context.Context, client *http.Client, policy *Policy, ref string, fetchDepth int, seen map[string]struct{}) (string, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return "", fmt.Errorf("empty inbox reference")
@@ -27,10 +38,27 @@ func InboxURLFromReference(ctx context.Context, client *http.Client, ref string)
 		return "", fmt.Errorf("invalid audience url %q", ref)
 	}
 	u.Fragment = ""
-	if looksLikeSharedInboxURL(u) {
-		return strings.TrimRight(u.String(), "/"), nil
+	canon := strings.TrimRight(u.String(), "/")
+	if canon == "" {
+		return "", fmt.Errorf("invalid audience url %q", ref)
 	}
-	return fetchActorInbox(ctx, client, strings.TrimRight(u.String(), "/"))
+	if _, dup := seen[canon]; dup {
+		return "", fmt.Errorf("inbox: resolution cycle involving %q", canon)
+	}
+	seen[canon] = struct{}{}
+
+	if policy != nil {
+		if err := policy.CheckParsedURL(ctx, u); err != nil {
+			return "", err
+		}
+	}
+	if looksLikeSharedInboxURL(u) {
+		return canon, nil
+	}
+	if fetchDepth >= maxInboxResolutionSteps {
+		return "", fmt.Errorf("inbox: resolution exceeded %d actor fetch(es)", maxInboxResolutionSteps)
+	}
+	return fetchActorInbox(ctx, client, policy, canon, fetchDepth+1, seen)
 }
 
 // looksLikeSharedInboxURL reports paths such as /inbox, .../users/x/inbox, or .../inbox/segment (e.g. Mastodon).
@@ -39,7 +67,7 @@ func looksLikeSharedInboxURL(u *url.URL) bool {
 	return strings.HasSuffix(strings.TrimRight(p, "/"), "/inbox") || strings.Contains(p, "/inbox/")
 }
 
-func fetchActorInbox(ctx context.Context, client *http.Client, actorURL string) (string, error) {
+func fetchActorInbox(ctx context.Context, client *http.Client, policy *Policy, actorURL string, nextFetchDepth int, seen map[string]struct{}) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, actorURL, nil)
 	if err != nil {
 		return "", err
@@ -67,5 +95,5 @@ func fetchActorInbox(ctx context.Context, client *http.Client, actorURL string) 
 	if strings.TrimSpace(doc.Inbox) == "" {
 		return "", fmt.Errorf("actor %s missing inbox", actorURL)
 	}
-	return InboxURLFromReference(ctx, client, doc.Inbox)
+	return inboxURLFromReference(ctx, client, policy, doc.Inbox, nextFetchDepth, seen)
 }

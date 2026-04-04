@@ -51,6 +51,7 @@ func TestIntegration_inboxPersistsActivityAndEnqueuesJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyTestingFetchPolicy(h)
 	h.fetchClient = fix.Client
 
 	actorBase := strings.TrimSuffix(fix.KeyID, "#main-key")
@@ -130,6 +131,7 @@ func TestIntegration_inboxSkipsPersistenceWhenQueueNotConfigured(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyTestingFetchPolicy(h)
 	h.fetchClient = fix.Client
 
 	actorBase := strings.TrimSuffix(fix.KeyID, "#main-key")
@@ -174,6 +176,7 @@ func TestIntegration_inboxSqlQueueInsertsPendingJobRow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyTestingFetchPolicy(h)
 	h.fetchClient = fix.Client
 
 	actorBase := strings.TrimSuffix(fix.KeyID, "#main-key")

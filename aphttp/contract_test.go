@@ -11,10 +11,19 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mastodon-site/activitypub-core/internal/actorkey"
+	"github.com/mastodon-site/activitypub-core/internal/fetch"
 	"github.com/mastodon-site/activitypub-core/queue"
 )
+
+// applyTestingFetchPolicy relaxes outbound fetch for httptest/localhost (tests only).
+func applyTestingFetchPolicy(h *Handler) {
+	pol := fetch.TestingPolicy()
+	h.fetchPolicy = pol
+	h.fetchClient = fetch.NewHTTPClientForPolicy(pol, 30*time.Second)
+}
 
 // recordingQueue satisfies queue.Backend for contract tests (inbox enqueue path only).
 type recordingQueue struct {

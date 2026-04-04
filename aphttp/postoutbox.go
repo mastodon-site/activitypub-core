@@ -94,7 +94,7 @@ func (h *Handler) PostOutbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inboxes, err := resolveDeliveryInboxes(r.Context(), h.fetchClient, rawFields, h.cfg.LocalSharedInboxURL())
+	inboxes, err := resolveDeliveryInboxes(r.Context(), h.fetchClient, h.fetchPolicy, rawFields, h.cfg.LocalSharedInboxURL())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -285,7 +285,7 @@ func recordOutboxFollowEffects(
 		if err != nil {
 			return nil, err
 		}
-		if err := store.DeleteFollowByFollowActivityID(ctx, tx, target); err != nil {
+		if err := store.DeleteFollowByFollowActivityIDForFollower(ctx, tx, target, localActorID); err != nil {
 			return nil, err
 		}
 		return nil, nil
@@ -383,7 +383,7 @@ func skipAudienceEntry(s string) bool {
 	return false
 }
 
-func resolveDeliveryInboxes(ctx context.Context, client *http.Client, raw map[string]json.RawMessage, localSharedInbox string) ([]string, error) {
+func resolveDeliveryInboxes(ctx context.Context, client *http.Client, policy *fetch.Policy, raw map[string]json.RawMessage, localSharedInbox string) ([]string, error) {
 	entries := audienceEntries(raw)
 	normLocal := strings.TrimRight(localSharedInbox, "/")
 	var resolved []string
@@ -392,7 +392,7 @@ func resolveDeliveryInboxes(ctx context.Context, client *http.Client, raw map[st
 		if skipAudienceEntry(e) {
 			continue
 		}
-		inbox, err := fetch.InboxURLFromReference(ctx, client, e)
+		inbox, err := fetch.InboxURLFromReference(ctx, client, policy, e)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", e, err)
 		}

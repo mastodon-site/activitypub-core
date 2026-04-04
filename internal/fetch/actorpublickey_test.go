@@ -48,7 +48,7 @@ func TestPublicKeyForKeyID(t *testing.T) {
 
 	client := srv.Client()
 	keyID := srv.URL + "/users/alice#main-key"
-	got, err := PublicKeyForKeyID(context.Background(), client, keyID)
+	got, err := PublicKeyForKeyID(context.Background(), client, LaxPolicyForTests(), keyID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestPublicKeyForKeyID_keyIdMismatch(t *testing.T) {
 
 	client := srv.Client()
 	wrongKey := srv.URL + "/users/bob#main-key"
-	if _, err := PublicKeyForKeyID(context.Background(), client, wrongKey); err == nil {
+	if _, err := PublicKeyForKeyID(context.Background(), client, LaxPolicyForTests(), wrongKey); err == nil {
 		t.Fatal("expected error when publicKey.id does not match keyId")
 	}
 }
@@ -96,7 +96,40 @@ func TestPublicKeyForKeyID_nonOKStatus(t *testing.T) {
 	defer srv.Close()
 
 	client := srv.Client()
-	if _, err := PublicKeyForKeyID(context.Background(), client, srv.URL+"/users/x#main"); err == nil {
+	if _, err := PublicKeyForKeyID(context.Background(), client, LaxPolicyForTests(), srv.URL+"/users/x#main"); err == nil {
 		t.Fatal("expected error on 404")
+	}
+}
+
+// Regression (security): default fetch policy must block keyId URLs that resolve to local/SSRF targets.
+func TestPublicKeyForKeyID_rejectsDisallowedHostUnderStrictPolicy(t *testing.T) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemStr, err := actorkey.PublicKeyPEMFromPrivate(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		base := "http://" + r.Host
+		keyID := base + "/users/alice#main-key"
+		actor := map[string]any{
+			"id": base + "/users/alice",
+			"publicKey": map[string]any{
+				"id":           keyID,
+				"publicKeyPem": pemStr,
+			},
+		}
+		j, _ := json.Marshal(actor)
+		w.Header().Set("Content-Type", "application/activity+json")
+		_, _ = w.Write(j)
+	}))
+	defer srv.Close()
+
+	strict := &Policy{}
+	keyID := srv.URL + "/users/alice#main-key"
+	if _, err := PublicKeyForKeyID(context.Background(), srv.Client(), strict, keyID); err == nil {
+		t.Fatal("strict policy must reject httptest loopback keyId before any useful fetch")
 	}
 }

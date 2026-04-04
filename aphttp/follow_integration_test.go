@@ -18,6 +18,7 @@ import (
 
 	"github.com/mastodon-site/activitypub-core/internal/actorkey"
 	"github.com/mastodon-site/activitypub-core/internal/config"
+	"github.com/mastodon-site/activitypub-core/internal/fetch"
 	"github.com/mastodon-site/activitypub-core/internal/inboxproc"
 	"github.com/mastodon-site/activitypub-core/migrate"
 	"github.com/mastodon-site/activitypub-core/queue"
@@ -119,6 +120,7 @@ func TestIntegration_inboundFollow_autoAcceptsAndEnqueuesAcceptDelivery(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyTestingFetchPolicy(h)
 	h.fetchClient = fix.Client
 
 	aliceProfile := "https://integration.test/users/alice"
@@ -141,7 +143,7 @@ func TestIntegration_inboundFollow_autoAcceptsAndEnqueuesAcceptDelivery(t *testi
 	if err := pool.QueryRow(ctx, `SELECT id FROM activities WHERE activity_id = $1`, followID).Scan(&actDBID); err != nil {
 		t.Fatal(err)
 	}
-	if err := inboxproc.ProcessInboxActivity(ctx, pool, rec, cfg, fix.Client, actDBID); err != nil {
+	if err := inboxproc.ProcessInboxActivity(ctx, pool, rec, cfg, fix.Client, actDBID, fetch.TestingPolicy()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -211,6 +213,7 @@ func TestIntegration_inboundFollow_noAutoAccept_staysPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyTestingFetchPolicy(h)
 	h.fetchClient = fix.Client
 
 	aliceProfile := "https://integration.test/users/alice"
@@ -231,7 +234,7 @@ func TestIntegration_inboundFollow_noAutoAccept_staysPending(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT id FROM activities WHERE activity_id = $1`, followID).Scan(&actDBID); err != nil {
 		t.Fatal(err)
 	}
-	if err := inboxproc.ProcessInboxActivity(ctx, pool, rec, cfg, fix.Client, actDBID); err != nil {
+	if err := inboxproc.ProcessInboxActivity(ctx, pool, rec, cfg, fix.Client, actDBID, fetch.TestingPolicy()); err != nil {
 		t.Fatal(err)
 	}
 	remoteID, err := store.ActorIDByActorURL(ctx, pool, remoteActor)
@@ -281,6 +284,7 @@ func TestIntegration_outboundFollow_localFollowee_enqueuesProcessInbox_andAccept
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyTestingFetchPolicy(h)
 	h.fetchClient = localProfileFetchClient(cfg.PublicBaseURL)
 
 	followID := "https://integration.test/activities/alice-follows-bob"
@@ -317,7 +321,7 @@ func TestIntegration_outboundFollow_localFollowee_enqueuesProcessInbox_andAccept
 	if err := pool.QueryRow(ctx, `SELECT id FROM activities WHERE activity_id = $1`, followID).Scan(&actDBID); err != nil {
 		t.Fatal(err)
 	}
-	if err := inboxproc.ProcessInboxActivity(ctx, pool, rec, cfg, h.fetchClient, actDBID); err != nil {
+	if err := inboxproc.ProcessInboxActivity(ctx, pool, rec, cfg, h.fetchClient, actDBID, fetch.TestingPolicy()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -371,6 +375,7 @@ func TestIntegration_outboundFollow_remoteRecordsPendingRemote_andDelivers(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyTestingFetchPolicy(h)
 	h.fetchClient = remote.Client()
 
 	followID := "https://integration.test/activities/alice-follows-remote"
@@ -444,6 +449,7 @@ func TestIntegration_inboundAccept_updatesPendingRemote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyTestingFetchPolicy(h)
 	aliceID := h.localActorIDs["alice"]
 
 	remoteURL := "https://remoteacc.test/users/r"
@@ -471,7 +477,7 @@ func TestIntegration_inboundAccept_updatesPendingRemote(t *testing.T) {
 		acceptAct, rid, raw).Scan(&actDBID); err != nil {
 		t.Fatal(err)
 	}
-	if err := inboxproc.ProcessInboxActivity(ctx, pool, rec, cfg, http.DefaultClient, actDBID); err != nil {
+	if err := inboxproc.ProcessInboxActivity(ctx, pool, rec, cfg, http.DefaultClient, actDBID, fetch.TestingPolicy()); err != nil {
 		t.Fatal(err)
 	}
 	stFollow, err := store.GetFollowState(ctx, pool, rid, aliceID)
@@ -507,6 +513,7 @@ func TestIntegration_inboundUndo_deletesFollow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyTestingFetchPolicy(h)
 	aliceID := h.localActorIDs["alice"]
 
 	remoteURL := "https://remoteacc.test/users/r2"
@@ -534,7 +541,7 @@ func TestIntegration_inboundUndo_deletesFollow(t *testing.T) {
 		undoAct, rid, undoRaw).Scan(&undoDBID); err != nil {
 		t.Fatal(err)
 	}
-	if err := inboxproc.ProcessInboxActivity(ctx, pool, rec, cfg, http.DefaultClient, undoDBID); err != nil {
+	if err := inboxproc.ProcessInboxActivity(ctx, pool, rec, cfg, http.DefaultClient, undoDBID, fetch.TestingPolicy()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.GetFollowState(ctx, pool, rid, aliceID); !errors.Is(err, pgx.ErrNoRows) {
@@ -581,6 +588,7 @@ func TestIntegration_postOutbox_undoDeletesPendingRemote(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyTestingFetchPolicy(h)
 	h.fetchClient = remote.Client()
 	mux := http.NewServeMux()
 	h.Mount(mux)
@@ -629,5 +637,215 @@ func TestIntegration_postOutbox_undoDeletesPendingRemote(t *testing.T) {
 
 	if _, err := store.GetFollowState(ctx, pool, aliceID, remoteID); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("expected follow removed after undo, err=%v", err)
+	}
+}
+
+// Regression (security): another remote actor must not Accept a Follow they did not send.
+func TestSecurity_inboundAccept_wrongActorCannotAcceptOthersFollow(t *testing.T) {
+	ctx := context.Background()
+	dsn := integrationDatabaseURL(t)
+	if err := migrate.Up(dsn, findMigrationsDir(t)); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	truncateFederationTables(t, pool)
+
+	cfg := &config.Config{
+		PublicBaseURL:  "https://integration.test",
+		LocalUsernames: []string{"alice"},
+		LocalUsername:  "alice",
+	}
+	rec := &recordingQueue{}
+	st := &store.Postgres{Pool: pool}
+	h, err := New(cfg, Deps{Store: st, Queue: rec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyTestingFetchPolicy(h)
+	aliceID := h.localActorIDs["alice"]
+
+	victimURL := "https://victim-reg.test/users/v"
+	victimRID, err := store.EnsureRemoteActor(ctx, pool, victimURL, "pem-v")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attackerURL := "https://attacker-reg.test/users/a"
+	attackerRID, err := store.EnsureRemoteActor(ctx, pool, attackerURL, "pem-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	followAct := "https://victim-reg.test/activities/follow-reg-1"
+	if err := store.UpsertFollow(ctx, pool, victimRID, aliceID, followAct, store.FollowStatePendingRemote); err != nil {
+		t.Fatal(err)
+	}
+
+	acceptAct := "https://attacker-reg.test/activities/accept-evil"
+	raw, err := json.Marshal(map[string]any{
+		"type":   "Accept",
+		"id":     acceptAct,
+		"actor":  attackerURL,
+		"object": followAct,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actDBID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO activities (activity_id, actor_id, type, raw_json) VALUES ($1,$2,'Accept',$3) RETURNING id`,
+		acceptAct, attackerRID, raw).Scan(&actDBID); err != nil {
+		t.Fatal(err)
+	}
+	if err := inboxproc.ProcessInboxActivity(ctx, pool, rec, cfg, http.DefaultClient, actDBID, fetch.TestingPolicy()); err != nil {
+		t.Fatal(err)
+	}
+	stFollow, err := store.GetFollowState(ctx, pool, victimRID, aliceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stFollow != store.FollowStatePendingRemote {
+		t.Fatalf("wrong Accept flipped follow to %q", stFollow)
+	}
+}
+
+// Regression (security): another remote actor must not Reject someone else's Follow.
+func TestSecurity_inboundReject_wrongActorCannotRejectOthersFollow(t *testing.T) {
+	ctx := context.Background()
+	dsn := integrationDatabaseURL(t)
+	if err := migrate.Up(dsn, findMigrationsDir(t)); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	truncateFederationTables(t, pool)
+
+	cfg := &config.Config{
+		PublicBaseURL:  "https://integration.test",
+		LocalUsernames: []string{"alice"},
+		LocalUsername:  "alice",
+	}
+	rec := &recordingQueue{}
+	st := &store.Postgres{Pool: pool}
+	h, err := New(cfg, Deps{Store: st, Queue: rec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyTestingFetchPolicy(h)
+	aliceID := h.localActorIDs["alice"]
+
+	victimURL := "https://victim-rej.test/users/v"
+	victimRID, err := store.EnsureRemoteActor(ctx, pool, victimURL, "pem-v")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attackerURL := "https://attacker-rej.test/users/a"
+	attackerRID, err := store.EnsureRemoteActor(ctx, pool, attackerURL, "pem-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	followAct := "https://victim-rej.test/activities/follow-rej-1"
+	if err := store.UpsertFollow(ctx, pool, victimRID, aliceID, followAct, store.FollowStatePendingRemote); err != nil {
+		t.Fatal(err)
+	}
+
+	rejectAct := "https://attacker-rej.test/activities/reject-evil"
+	raw, err := json.Marshal(map[string]any{
+		"type":   "Reject",
+		"id":     rejectAct,
+		"actor":  attackerURL,
+		"object": followAct,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actDBID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO activities (activity_id, actor_id, type, raw_json) VALUES ($1,$2,'Reject',$3) RETURNING id`,
+		rejectAct, attackerRID, raw).Scan(&actDBID); err != nil {
+		t.Fatal(err)
+	}
+	if err := inboxproc.ProcessInboxActivity(ctx, pool, rec, cfg, http.DefaultClient, actDBID, fetch.TestingPolicy()); err != nil {
+		t.Fatal(err)
+	}
+	stFollow, err := store.GetFollowState(ctx, pool, victimRID, aliceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stFollow != store.FollowStatePendingRemote {
+		t.Fatalf("wrong Reject flipped follow to %q", stFollow)
+	}
+}
+
+// Regression (security): another remote actor must not Undo someone else's Follow.
+func TestSecurity_inboundUndo_wrongActorCannotUndoOthersFollow(t *testing.T) {
+	ctx := context.Background()
+	dsn := integrationDatabaseURL(t)
+	if err := migrate.Up(dsn, findMigrationsDir(t)); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	truncateFederationTables(t, pool)
+
+	cfg := &config.Config{
+		PublicBaseURL:  "https://integration.test",
+		LocalUsernames: []string{"alice"},
+		LocalUsername:  "alice",
+	}
+	rec := &recordingQueue{}
+	st := &store.Postgres{Pool: pool}
+	h, err := New(cfg, Deps{Store: st, Queue: rec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyTestingFetchPolicy(h)
+	aliceID := h.localActorIDs["alice"]
+
+	victimURL := "https://victim-undo.test/users/v"
+	victimRID, err := store.EnsureRemoteActor(ctx, pool, victimURL, "pem-v")
+	if err != nil {
+		t.Fatal(err)
+	}
+	attackerURL := "https://attacker-undo.test/users/a"
+	attackerRID, err := store.EnsureRemoteActor(ctx, pool, attackerURL, "pem-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	followAct := "https://victim-undo.test/activities/follow-undo-1"
+	if err := store.UpsertFollow(ctx, pool, victimRID, aliceID, followAct, store.FollowStateAccepted); err != nil {
+		t.Fatal(err)
+	}
+
+	undoAct := "https://attacker-undo.test/activities/undo-evil"
+	raw, err := json.Marshal(map[string]any{
+		"type":   "Undo",
+		"id":     undoAct,
+		"actor":  attackerURL,
+		"object": followAct,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var actDBID int64
+	if err := pool.QueryRow(ctx, `INSERT INTO activities (activity_id, actor_id, type, raw_json) VALUES ($1,$2,'Undo',$3) RETURNING id`,
+		undoAct, attackerRID, raw).Scan(&actDBID); err != nil {
+		t.Fatal(err)
+	}
+	if err := inboxproc.ProcessInboxActivity(ctx, pool, rec, cfg, http.DefaultClient, actDBID, fetch.TestingPolicy()); err != nil {
+		t.Fatal(err)
+	}
+	stFollow, err := store.GetFollowState(ctx, pool, victimRID, aliceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stFollow != store.FollowStateAccepted {
+		t.Fatalf("wrong Undo removed or changed follow (state %q)", stFollow)
 	}
 }

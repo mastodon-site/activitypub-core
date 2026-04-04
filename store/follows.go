@@ -43,6 +43,16 @@ func SetFollowStateByFollowActivityID(ctx context.Context, q dbExec, followActiv
 	return err
 }
 
+// SetFollowStateByFollowActivityIDForFollower updates follow state only when follower_actor_id matches.
+// Used for federated Accept/Reject so a remote actor cannot mutate another actor's follow edge.
+func SetFollowStateByFollowActivityIDForFollower(ctx context.Context, q dbExec, followActivityID, state string, followerActorID int64) error {
+	_, err := q.Exec(ctx, `
+		UPDATE follows SET state = $2, updated_at = now()
+		WHERE follow_activity_id = $1 AND follower_actor_id = $3
+	`, followActivityID, state, followerActorID)
+	return err
+}
+
 // DeleteFollowByPair removes a follow relationship (unfollow / Undo).
 func DeleteFollowByPair(ctx context.Context, q dbExec, followerID, followeeID int64) error {
 	_, err := q.Exec(ctx, `DELETE FROM follows WHERE follower_actor_id = $1 AND followee_actor_id = $2`, followerID, followeeID)
@@ -52,6 +62,12 @@ func DeleteFollowByPair(ctx context.Context, q dbExec, followerID, followeeID in
 // DeleteFollowByFollowActivityID removes the edge created by that Follow activity (Undo).
 func DeleteFollowByFollowActivityID(ctx context.Context, q dbExec, followActivityIRI string) error {
 	_, err := q.Exec(ctx, `DELETE FROM follows WHERE follow_activity_id = $1`, followActivityIRI)
+	return err
+}
+
+// DeleteFollowByFollowActivityIDForFollower deletes by follow activity IRI only when the follower matches.
+func DeleteFollowByFollowActivityIDForFollower(ctx context.Context, q dbExec, followActivityIRI string, followerActorID int64) error {
+	_, err := q.Exec(ctx, `DELETE FROM follows WHERE follow_activity_id = $1 AND follower_actor_id = $2`, followActivityIRI, followerActorID)
 	return err
 }
 

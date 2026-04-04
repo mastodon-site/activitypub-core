@@ -27,7 +27,8 @@ type DeliverPayload struct {
 }
 
 // ProcessInboxActivity loads an activity by DB id and runs type-specific handlers.
-func ProcessInboxActivity(ctx context.Context, pool *pgxpool.Pool, q queue.Backend, cfg *config.Config, httpClient *http.Client, activityDBID int64) error {
+// fetchPolicy overrides outbound URL policy when non-nil (tests); production callers pass nil.
+func ProcessInboxActivity(ctx context.Context, pool *pgxpool.Pool, q queue.Backend, cfg *config.Config, httpClient *http.Client, activityDBID int64, fetchPolicy *fetch.Policy) error {
 	row, err := store.GetActivityByID(ctx, pool, activityDBID)
 	if err != nil {
 		return err
@@ -38,13 +39,17 @@ func ProcessInboxActivity(ctx context.Context, pool *pgxpool.Pool, q queue.Backe
 	}
 
 	t := activityTypeNormalized(row.Type)
+	pol := fetchPolicy
+	if pol == nil {
+		pol = fetch.PolicyFromConfig(cfg)
+	}
 	switch {
 	case strings.EqualFold(t, "Follow"):
-		return handleFollow(ctx, pool, q, cfg, httpClient, row, fields)
+		return handleFollow(ctx, pool, q, cfg, httpClient, pol, row, fields)
 	case strings.EqualFold(t, "Accept"):
 		return handleAccept(ctx, pool, row, fields)
 	case strings.EqualFold(t, "Reject"):
-		return handleReject(ctx, pool, fields)
+		return handleReject(ctx, pool, row, fields)
 	case strings.EqualFold(t, "Undo"):
 		return handleUndo(ctx, pool, row, fields)
 	default:
@@ -60,7 +65,7 @@ func activityTypeNormalized(t string) string {
 	return t
 }
 
-func handleFollow(ctx context.Context, pool *pgxpool.Pool, q queue.Backend, cfg *config.Config, httpClient *http.Client, row *store.ActivityRow, fields map[string]json.RawMessage) error {
+func handleFollow(ctx context.Context, pool *pgxpool.Pool, q queue.Backend, cfg *config.Config, httpClient *http.Client, fetchPolicy *fetch.Policy, row *store.ActivityRow, fields map[string]json.RawMessage) error {
 	objectIRI, err := as2.ObjectIRI(fields)
 	if err != nil {
 		return err
@@ -91,7 +96,7 @@ func handleFollow(ctx context.Context, pool *pgxpool.Pool, q queue.Backend, cfg 
 	if err := pool.QueryRow(ctx, `SELECT actor_url FROM actors WHERE id = $1`, followerID).Scan(&followerActorURL); err != nil {
 		return err
 	}
-	inbox, err := fetch.InboxURLFromReference(ctx, httpClient, followerActorURL)
+	inbox, err := fetch.InboxURLFromReference(ctx, httpClient, fetchPolicy, followerActorURL)
 	if err != nil {
 		return fmt.Errorf("follower inbox: %w", err)
 	}
@@ -116,7 +121,7 @@ func handleFollow(ctx context.Context, pool *pgxpool.Pool, q queue.Backend, cfg 
 	if err := q.Enqueue(ctx, job); err != nil {
 		return err
 	}
-	return store.SetFollowStateByFollowActivityID(ctx, pool, row.ActivityID, store.FollowStateAccepted)
+	return store.SetFollowStateByFollowActivityIDForFollower(ctx, pool, row.ActivityID, store.FollowStateAccepted, row.ActorID)
 }
 
 func buildAcceptFollow(cfg *config.Config, followeeUser, followeeProfile, followActivityIRI string) ([]byte, error) {
@@ -138,38 +143,34 @@ func buildAcceptFollow(cfg *config.Config, followeeUser, followeeProfile, follow
 }
 
 func handleAccept(ctx context.Context, pool *pgxpool.Pool, row *store.ActivityRow, fields map[string]json.RawMessage) error {
-	_ = row
 	target, err := as2.ObjectIRI(fields)
 	if err != nil {
 		return err
 	}
-	_ = store.SetFollowStateByFollowActivityID(ctx, pool, target, store.FollowStateAccepted)
-	return nil
+	return store.SetFollowStateByFollowActivityIDForFollower(ctx, pool, target, store.FollowStateAccepted, row.ActorID)
 }
 
-func handleReject(ctx context.Context, pool *pgxpool.Pool, fields map[string]json.RawMessage) error {
+func handleReject(ctx context.Context, pool *pgxpool.Pool, row *store.ActivityRow, fields map[string]json.RawMessage) error {
 	target, err := as2.ObjectIRI(fields)
 	if err != nil {
 		return err
 	}
-	_ = store.SetFollowStateByFollowActivityID(ctx, pool, target, store.FollowStateRejected)
-	return nil
+	return store.SetFollowStateByFollowActivityIDForFollower(ctx, pool, target, store.FollowStateRejected, row.ActorID)
 }
 
 func handleUndo(ctx context.Context, pool *pgxpool.Pool, row *store.ActivityRow, fields map[string]json.RawMessage) error {
-	_ = row
 	raw, ok := fields["object"]
 	if !ok {
 		return fmt.Errorf("undo missing object")
 	}
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil && s != "" {
-		return store.DeleteFollowByFollowActivityID(ctx, pool, s)
+		return store.DeleteFollowByFollowActivityIDForFollower(ctx, pool, s, row.ActorID)
 	}
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &obj); err == nil {
 		if id, err := jsonStringFromMap(obj, "id"); err == nil {
-			return deleteFollowForUndoTarget(ctx, pool, obj, id)
+			return deleteFollowForUndoTarget(ctx, pool, row.ActorID, obj, id)
 		}
 	}
 	return fmt.Errorf("undo object shape not supported")
@@ -187,7 +188,7 @@ func jsonStringFromMap(m map[string]json.RawMessage, key string) (string, error)
 	return s, nil
 }
 
-func deleteFollowForUndoTarget(ctx context.Context, pool *pgxpool.Pool, obj map[string]json.RawMessage, id string) error {
+func deleteFollowForUndoTarget(ctx context.Context, pool *pgxpool.Pool, followerActorID int64, obj map[string]json.RawMessage, id string) error {
 	t := ""
 	if raw, ok := obj["type"]; ok {
 		var ts string
@@ -196,7 +197,7 @@ func deleteFollowForUndoTarget(ctx context.Context, pool *pgxpool.Pool, obj map[
 		}
 	}
 	if strings.EqualFold(t, "Follow") {
-		return store.DeleteFollowByFollowActivityID(ctx, pool, id)
+		return store.DeleteFollowByFollowActivityIDForFollower(ctx, pool, id, followerActorID)
 	}
 	return nil
 }
