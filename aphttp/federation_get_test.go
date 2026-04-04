@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -164,5 +165,45 @@ func TestContract_GETActivityOrObject_hidesRemoteOwnedActivity(t *testing.T) {
 	mux.ServeHTTP(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestContract_GETActivityOrObject_catchallHostHTML(t *testing.T) {
+	ctx := context.Background()
+	dsn := integrationDatabaseURL(t)
+	if err := migrate.Up(dsn, findMigrationsDir(t)); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	_, err = pool.Exec(ctx, `TRUNCATE TABLE queue_jobs, deliveries, follows, federated_likes, federated_announces, federated_blocks, activities, objects, actors RESTART IDENTITY CASCADE`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{
+		PublicBaseURL:  "https://catchall.test",
+		LocalUsernames: []string{"alice"},
+		LocalUsername:  "alice",
+	}
+	st := &store.Postgres{Pool: pool}
+	h, err := New(cfg, Deps{Store: st, Queue: nil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	h.Mount(mux)
+	req := httptest.NewRequest(http.MethodGet, "/this-path-does-not-exist", nil)
+	req.Header.Set("Accept", "text/html")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d %s", rr.Code, rr.Body.String())
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "<h1>catchall.test</h1>") {
+		t.Fatalf("body %q", body)
 	}
 }
