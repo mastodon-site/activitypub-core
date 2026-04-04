@@ -10,9 +10,20 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/mastodon-site/activitypub-core/store"
 )
+
+// OAuth token errors must be JSON (RFC 6749 §5.2). Plain text breaks Mastodon clients (e.g. Ivory).
+func oauthTokenError(w http.ResponseWriter, status int, errCode, description string) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error":             errCode,
+		"error_description": description,
+	})
+}
 
 func (s *Server) getOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -128,15 +139,15 @@ func (s *Server) postOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) postOAuthToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		oauthTokenError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
 		return
 	}
 	if err := r.ParseForm(); err != nil {
-		http.Error(w, "invalid form", http.StatusBadRequest)
+		oauthTokenError(w, http.StatusBadRequest, "invalid_request", "invalid form body")
 		return
 	}
 	if r.FormValue("grant_type") != "authorization_code" {
-		http.Error(w, "unsupported grant_type", http.StatusBadRequest)
+		oauthTokenError(w, http.StatusBadRequest, "unsupported_grant_type", "only authorization_code is supported")
 		return
 	}
 	code := r.FormValue("code")
@@ -145,55 +156,56 @@ func (s *Server) postOAuthToken(w http.ResponseWriter, r *http.Request) {
 	redirectURI := r.FormValue("redirect_uri")
 	verifier := r.FormValue("code_verifier")
 	if code == "" || clientID == "" || redirectURI == "" {
-		http.Error(w, "missing parameters", http.StatusBadRequest)
+		oauthTokenError(w, http.StatusBadRequest, "invalid_request", "code, client_id, and redirect_uri are required")
 		return
 	}
 	app, err := store.OAuthApplicationByClientID(r.Context(), s.Pool, clientID)
 	if err != nil {
-		http.Error(w, "invalid client", http.StatusUnauthorized)
+		oauthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown client_id")
 		return
 	}
 	if !store.VerifyClientSecret(app, clientSecret) {
-		http.Error(w, "invalid client", http.StatusUnauthorized)
+		oauthTokenError(w, http.StatusUnauthorized, "invalid_client", "invalid client_secret")
 		return
 	}
 
 	ctx := r.Context()
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
-		http.Error(w, "tx", http.StatusInternalServerError)
+		oauthTokenError(w, http.StatusInternalServerError, "server_error", "could not begin transaction")
 		return
 	}
 	defer tx.Rollback(ctx)
 
 	row, err := store.ConsumeAuthorizationCode(ctx, tx, code, redirectURI)
 	if err != nil {
-		http.Error(w, "invalid code", http.StatusBadRequest)
+		oauthTokenError(w, http.StatusBadRequest, "invalid_grant", "invalid or expired authorization code")
 		return
 	}
 	if row.ApplicationID != app.ID {
-		http.Error(w, "invalid code", http.StatusBadRequest)
+		oauthTokenError(w, http.StatusBadRequest, "invalid_grant", "authorization code was issued to another client")
 		return
 	}
 	if err := pkceVerify(verifier, row); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		oauthTokenError(w, http.StatusBadRequest, "invalid_grant", err.Error())
 		return
 	}
 	rawTok, err := store.InsertAccessTokenTx(ctx, tx, row.ApplicationID, row.ActorID, row.Scopes)
 	if err != nil {
-		http.Error(w, "token", http.StatusInternalServerError)
+		oauthTokenError(w, http.StatusInternalServerError, "server_error", "could not create access token")
 		return
 	}
 	if err := tx.Commit(ctx); err != nil {
-		http.Error(w, "tx", http.StatusInternalServerError)
+		oauthTokenError(w, http.StatusInternalServerError, "server_error", "could not commit transaction")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"access_token": rawTok,
 		"token_type":   "Bearer",
 		"scope":        row.Scopes,
-		"created_at":   0,
+		"created_at":   time.Now().Unix(),
 	})
 }
 
