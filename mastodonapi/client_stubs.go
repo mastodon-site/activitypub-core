@@ -37,9 +37,9 @@ func (s *Server) getPreferences(w http.ResponseWriter, r *http.Request, _ int64)
 		"posting:default:visibility": "public",
 		"posting:default:sensitive":  false,
 		"posting:default:language":   nil,
-		"reading:expand:media":     "default",
-		"reading:expand:spoilers":  false,
-		"reading:autoplay:gifs":    false,
+		"reading:expand:media":       "default",
+		"reading:expand:spoilers":    false,
+		"reading:autoplay:gifs":      false,
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -59,12 +59,12 @@ func (s *Server) getOAuthAuthorizationServer(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"issuer":                 base,
-		"authorization_endpoint": base + "/oauth/authorize",
-		"token_endpoint":         base + "/oauth/token",
-		"response_types_supported": []string{"code"},
-		"response_modes_supported": []string{"query"},
-		"grant_types_supported":    []string{"authorization_code"},
+		"issuer":                           base,
+		"authorization_endpoint":           base + "/oauth/authorize",
+		"token_endpoint":                   base + "/oauth/token",
+		"response_types_supported":         []string{"code"},
+		"response_modes_supported":         []string{"query"},
+		"grant_types_supported":            []string{"authorization_code"},
 		"code_challenge_methods_supported": []string{"S256", "plain"},
 		"token_endpoint_auth_methods_supported": []string{
 			"client_secret_post",
