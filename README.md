@@ -60,11 +60,12 @@ Override **`AP_PUBLIC_BASE_URL`** (and optionally **`AP_LOCAL_USERNAMES`**) when
 
 ### Publishing container images (maintainers)
 
-CI only **builds** images for validation. **GHCR publishes** run from [`.github/workflows/release.yml`](.github/workflows/release.yml):
+Post-merge releases follow the same model as [musicsocial](https://github.com/mastodon-site/musicsocial): [`.github/workflows/ci.yml`](.github/workflows/ci.yml) (**CI/CD Pipeline**).
 
-1. Create a **GitHub Release** from a semver tag (`vMAJOR.MINOR.PATCH`). Publishing the release builds and pushes **`ghcr.io/<owner>/activitypub-core-apd`** and **`activitypub-core-apw`** with tags `v*`, `major.minor`, and `latest`.
-2. Package visibility must allow the org/registry to pull (default `GITHUB_TOKEN` needs **packages: write** for this repo—already set on the workflow).
-3. To rebuild after a fix, re-run the failed jobs on the release workflow, or delete and re-publish the GitHub Release for that tag (avoid reusing a tag for different commits).
+1. Open a PR to **`main`** with exactly one semver label: **`patch`**, **`minor`**, or **`major`** (same as PR checks).
+2. When the PR is **merged**, the workflow bumps the version from the previous git tag, **builds and pushes** **`ghcr.io/<owner>/activitypub-core-apd`** and **`activitypub-core-apw`** to GHCR (semver + `latest` when applicable), then **creates the GitHub Release** via `softprops/action-gh-release`.
+3. **`workflow_dispatch`** on that workflow can rebuild/push for debugging (version comes from `git describe`).
+4. **`GITHUB_TOKEN`** must be allowed **`packages: write`** and **`contents: write`** (set on the workflow).
 
 ### `apw`
 
