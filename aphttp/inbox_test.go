@@ -50,10 +50,12 @@ func TestSharedInbox_acceptsSignedActivity(t *testing.T) {
 	defer actorSrv.Close()
 	keyID := actorSrv.URL + "/users/remote#main-key"
 
-	h, err := New(&config.Config{InboxMaxBody: 65536}, Deps{})
+	cfg := &config.Config{InboxMaxBody: 65536}
+	h, err := New(cfg, Deps{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyTestingFetchPolicy(h)
 	h.fetchClient = actorSrv.Client()
 
 	body, err := json.Marshal(map[string]any{

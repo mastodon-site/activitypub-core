@@ -13,8 +13,10 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/mastodon-site/activitypub-core/internal/config"
+	"github.com/mastodon-site/activitypub-core/internal/fetch"
 	"github.com/mastodon-site/activitypub-core/internal/httpsig"
 )
 
@@ -53,12 +55,13 @@ func TestDeliverActivity_POSTsValidSignature(t *testing.T) {
 		LocalUsername:       "admin",
 		ActorPrivateKeyPath: keyPath,
 	}
+	testClient := fetch.NewHTTPClientForPolicy(fetch.TestingPolicy(), 60*time.Second)
 	act := json.RawMessage(`{"type":"Create","id":"https://origin.example/o/1"}`)
 	raw, err := json.Marshal(deliverPayload{InboxURL: inboxSrv.URL, Body: act})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := deliverActivity(context.Background(), cfg, raw); err != nil {
+	if err := deliverActivity(context.Background(), cfg, testClient, raw); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -66,7 +69,7 @@ func TestDeliverActivity_POSTsValidSignature(t *testing.T) {
 func TestDeliverActivity_requiresKeys(t *testing.T) {
 	cfg := &config.Config{PublicBaseURL: "https://x"}
 	raw, _ := json.Marshal(deliverPayload{InboxURL: "http://y", Body: json.RawMessage(`{}`)})
-	if err := deliverActivity(context.Background(), cfg, raw); err == nil {
+	if err := deliverActivity(context.Background(), cfg, nil, raw); err == nil {
 		t.Fatal("expected error without private key path")
 	}
 }

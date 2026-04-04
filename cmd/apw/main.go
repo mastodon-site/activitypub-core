@@ -26,6 +26,7 @@ import (
 
 	"github.com/mastodon-site/activitypub-core/internal/actorkey"
 	"github.com/mastodon-site/activitypub-core/internal/config"
+	"github.com/mastodon-site/activitypub-core/internal/fetch"
 	"github.com/mastodon-site/activitypub-core/internal/httpsig"
 	"github.com/mastodon-site/activitypub-core/internal/inboxproc"
 	"github.com/mastodon-site/activitypub-core/migrate"
@@ -127,7 +128,7 @@ func main() {
 
 func workerLoop(ctx context.Context, id int, q queue.Backend, cfg *config.Config, pool *pgxpool.Pool, poll time.Duration) {
 	log.Printf("worker %d started", id)
-	hc := &http.Client{Timeout: 30 * time.Second}
+	hc := fetch.NewHTTPClient(cfg, 30*time.Second)
 	for {
 		select {
 		case <-ctx.Done():
@@ -162,7 +163,7 @@ func processJob(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, q q
 	case queue.TypeNoop:
 		return nil
 	case queue.TypeDeliverActivity:
-		return deliverActivity(ctx, cfg, lease.Payload)
+		return deliverActivity(ctx, cfg, fetch.NewHTTPClient(cfg, 60*time.Second), lease.Payload)
 	case queue.TypeProcessInboxActivity:
 		if pool == nil {
 			return fmt.Errorf("process_inbox_activity requires AP_DATABASE_URL (postgres pool)")
@@ -176,7 +177,7 @@ func processJob(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, q q
 		if payload.ActivityDBID < 1 {
 			return fmt.Errorf("process_inbox_activity: activityDbId required")
 		}
-		return inboxproc.ProcessInboxActivity(ctx, pool, q, cfg, httpClient, payload.ActivityDBID)
+		return inboxproc.ProcessInboxActivity(ctx, pool, q, cfg, httpClient, payload.ActivityDBID, nil)
 	default:
 		log.Printf("unknown job type %q — acknowledging", lease.Type)
 		return nil
@@ -200,7 +201,7 @@ func signingUsernameForDelivery(p deliverPayload, cfg *config.Config) string {
 	return cfg.LocalUsername
 }
 
-func deliverActivity(ctx context.Context, cfg *config.Config, raw json.RawMessage) error {
+func deliverActivity(ctx context.Context, cfg *config.Config, client *http.Client, raw json.RawMessage) error {
 	if cfg.ActorPrivateKeyPath == "" {
 		return fmt.Errorf("AP_ACTOR_PRIVATE_KEY_PATH required for deliver_activity")
 	}
@@ -228,7 +229,9 @@ func deliverActivity(ctx context.Context, cfg *config.Config, raw json.RawMessag
 		return err
 	}
 	req = req.WithContext(ctx)
-	client := &http.Client{Timeout: 60 * time.Second}
+	if client == nil {
+		client = fetch.NewHTTPClient(cfg, 60*time.Second)
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return err

@@ -27,7 +27,7 @@ type publicKeyObj struct {
 }
 
 // PublicKeyForKeyID downloads the actor URL derived from keyId and returns the matching RSA public key.
-func PublicKeyForKeyID(ctx context.Context, client *http.Client, keyID string) (*rsa.PublicKey, error) {
+func PublicKeyForKeyID(ctx context.Context, client *http.Client, policy *Policy, keyID string) (*rsa.PublicKey, error) {
 	u, err := url.Parse(keyID)
 	if err != nil {
 		return nil, fmt.Errorf("keyId URL: %w", err)
@@ -35,9 +35,14 @@ func PublicKeyForKeyID(ctx context.Context, client *http.Client, keyID string) (
 	if u.Scheme != "https" && u.Scheme != "http" {
 		return nil, fmt.Errorf("keyId must be http(s), got %q", u.Scheme)
 	}
-	fetch := *u
-	fetch.Fragment = ""
-	fetchURL := fetch.String()
+	fetchu := *u
+	fetchu.Fragment = ""
+	fetchURL := fetchu.String()
+	if policy != nil {
+		if err := policy.CheckURL(ctx, fetchURL); err != nil {
+			return nil, err
+		}
+	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
 	if err != nil {

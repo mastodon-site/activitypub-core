@@ -45,7 +45,7 @@ func TestIntegration_UpsertFollow_andAccept_andUndoDelete(t *testing.T) {
 	if st != FollowStatePendingRemote {
 		t.Fatalf("state %s", st)
 	}
-	if err := SetFollowStateByFollowActivityID(ctx, pool, followAct, FollowStateAccepted); err != nil {
+	if err := SetFollowStateByFollowActivityIDForFollower(ctx, pool, followAct, FollowStateAccepted, aid); err != nil {
 		t.Fatal(err)
 	}
 	st, err = GetFollowState(ctx, pool, aid, bid)
@@ -55,7 +55,7 @@ func TestIntegration_UpsertFollow_andAccept_andUndoDelete(t *testing.T) {
 	if st != FollowStateAccepted {
 		t.Fatalf("after accept: %s", st)
 	}
-	if err := DeleteFollowByFollowActivityID(ctx, pool, followAct); err != nil {
+	if err := DeleteFollowByFollowActivityIDForFollower(ctx, pool, followAct, aid); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := GetFollowState(ctx, pool, aid, bid); !errors.Is(err, pgx.ErrNoRows) {
@@ -76,7 +76,7 @@ func TestIntegration_SetFollowState_idempotentOnUnknownActivity(t *testing.T) {
 	defer pool.Close()
 	truncateAll(t, pool)
 
-	if err := SetFollowStateByFollowActivityID(ctx, pool, "https://none/nope", FollowStateAccepted); err != nil {
+	if err := SetFollowStateByFollowActivityIDForFollower(ctx, pool, "https://none/nope", FollowStateAccepted, 0); err != nil {
 		t.Fatal(err)
 	}
 }

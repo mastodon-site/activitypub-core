@@ -76,12 +76,38 @@ func TestContract_SharedInbox_keyResolutionFailure(t *testing.T) {
 	}
 }
 
-func TestContract_SharedInbox_activityFieldsMissing_id(t *testing.T) {
+// Regression (security): SharedInbox must not fetch actor PEM from disallowed URLs under default fetch policy
+// (e.g. httptest http://127.0.0.1 keyId would be SSRF if policy were not applied).
+func TestContract_SharedInbox_keyFetchRejectedUnderStrictFetchPolicy(t *testing.T) {
 	fix := newActorFixture(t)
-	h, err := New(&config.Config{InboxMaxBody: 65536}, Deps{})
+	cfg := &config.Config{InboxMaxBody: 65536}
+	h, err := New(cfg, Deps{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	h.fetchClient = fix.Client
+
+	body := mustJSON(t, map[string]any{
+		"type":  "Create",
+		"id":    "https://sender.test/o/strict-fetch",
+		"actor": strings.TrimSuffix(fix.KeyID, "#main-key"),
+	})
+	req := mustSignedPost(t, "https://inbox.test/inbox", body, fix.KeyID, fix.Priv)
+	rr := httptest.NewRecorder()
+	h.SharedInbox(rr, req)
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for disallowed keyId under strict policy, got %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestContract_SharedInbox_activityFieldsMissing_id(t *testing.T) {
+	fix := newActorFixture(t)
+	cfg := &config.Config{InboxMaxBody: 65536}
+	h, err := New(cfg, Deps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyTestingFetchPolicy(h)
 	h.fetchClient = fix.Client
 
 	body := mustJSON(t, map[string]any{
@@ -98,10 +124,12 @@ func TestContract_SharedInbox_activityFieldsMissing_id(t *testing.T) {
 
 func TestContract_SharedInbox_activityFieldsMissing_type(t *testing.T) {
 	fix := newActorFixture(t)
-	h, err := New(&config.Config{InboxMaxBody: 65536}, Deps{})
+	cfg := &config.Config{InboxMaxBody: 65536}
+	h, err := New(cfg, Deps{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyTestingFetchPolicy(h)
 	h.fetchClient = fix.Client
 
 	body := mustJSON(t, map[string]any{
@@ -118,10 +146,12 @@ func TestContract_SharedInbox_activityFieldsMissing_type(t *testing.T) {
 
 func TestContract_SharedInbox_activityFieldsMissing_actor(t *testing.T) {
 	fix := newActorFixture(t)
-	h, err := New(&config.Config{InboxMaxBody: 65536}, Deps{})
+	cfg := &config.Config{InboxMaxBody: 65536}
+	h, err := New(cfg, Deps{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyTestingFetchPolicy(h)
 	h.fetchClient = fix.Client
 
 	body := mustJSON(t, map[string]any{
@@ -138,10 +168,12 @@ func TestContract_SharedInbox_activityFieldsMissing_actor(t *testing.T) {
 
 func TestContract_SharedInbox_actorDoesNotMatchSignerKeyId(t *testing.T) {
 	fix := newActorFixture(t)
-	h, err := New(&config.Config{InboxMaxBody: 65536}, Deps{})
+	cfg := &config.Config{InboxMaxBody: 65536}
+	h, err := New(cfg, Deps{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyTestingFetchPolicy(h)
 	h.fetchClient = fix.Client
 
 	body := mustJSON(t, map[string]any{
@@ -159,10 +191,12 @@ func TestContract_SharedInbox_actorDoesNotMatchSignerKeyId(t *testing.T) {
 
 func TestContract_SharedInbox_invalidJSONBody(t *testing.T) {
 	fix := newActorFixture(t)
-	h, err := New(&config.Config{InboxMaxBody: 65536}, Deps{})
+	cfg := &config.Config{InboxMaxBody: 65536}
+	h, err := New(cfg, Deps{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyTestingFetchPolicy(h)
 	h.fetchClient = fix.Client
 
 	body := []byte(`{not-json`)
@@ -176,10 +210,12 @@ func TestContract_SharedInbox_invalidJSONBody(t *testing.T) {
 
 func TestContract_SharedInbox_acceptsLdJSONContentType(t *testing.T) {
 	fix := newActorFixture(t)
-	h, err := New(&config.Config{InboxMaxBody: 65536}, Deps{})
+	cfg := &config.Config{InboxMaxBody: 65536}
+	h, err := New(cfg, Deps{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyTestingFetchPolicy(h)
 	h.fetchClient = fix.Client
 
 	body := mustJSON(t, map[string]any{
@@ -217,10 +253,12 @@ func TestContract_SharedInbox_acceptsLdJSONContentType(t *testing.T) {
 
 func TestContract_SharedInbox_acceptsActorAsObject(t *testing.T) {
 	fix := newActorFixture(t)
-	h, err := New(&config.Config{InboxMaxBody: 65536}, Deps{})
+	cfg := &config.Config{InboxMaxBody: 65536}
+	h, err := New(cfg, Deps{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyTestingFetchPolicy(h)
 	h.fetchClient = fix.Client
 
 	actorBase := strings.TrimSuffix(fix.KeyID, "#main-key")
@@ -242,10 +280,12 @@ func TestContract_SharedInbox_acceptsActorAsObject(t *testing.T) {
 
 func TestContract_SharedInbox_acceptsJsonLdTypeArray(t *testing.T) {
 	fix := newActorFixture(t)
-	h, err := New(&config.Config{InboxMaxBody: 65536}, Deps{})
+	cfg := &config.Config{InboxMaxBody: 65536}
+	h, err := New(cfg, Deps{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyTestingFetchPolicy(h)
 	h.fetchClient = fix.Client
 
 	actorBase := strings.TrimSuffix(fix.KeyID, "#main-key")
@@ -269,10 +309,12 @@ func mustMarshalString(t *testing.T, s string) string {
 
 func TestContract_SharedInbox_responseBodyEmptyOn202(t *testing.T) {
 	fix := newActorFixture(t)
-	h, err := New(&config.Config{InboxMaxBody: 65536}, Deps{})
+	cfg := &config.Config{InboxMaxBody: 65536}
+	h, err := New(cfg, Deps{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	applyTestingFetchPolicy(h)
 	h.fetchClient = fix.Client
 
 	body := mustJSON(t, map[string]any{

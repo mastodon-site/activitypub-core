@@ -32,6 +32,7 @@ type Handler struct {
 	// actorPublicKeyPEM is PKIX PEM for JSON-LD publicKey.publicKeyPem; empty means use stub in GetActor.
 	actorPublicKeyPEM string
 	fetchClient       *http.Client
+	fetchPolicy       *fetch.Policy
 	inboxMaxBody      int
 	st                *store.Postgres
 	q                 queue.Backend
@@ -42,16 +43,13 @@ type Handler struct {
 // If cfg sets actor key paths, the PEM for the actor document is loaded at startup.
 // When deps.Store is set, each configured local username is upserted into actors and localActorIDs is populated.
 func New(cfg *config.Config, deps Deps) (*Handler, error) {
+	pol := fetch.PolicyFromConfig(cfg)
 	h := &Handler{
-		cfg: cfg,
-		st:  deps.Store,
-		q:   deps.Queue,
-		fetchClient: &http.Client{
-			Timeout: 30 * time.Second,
-			Transport: &http.Transport{
-				Proxy: http.ProxyFromEnvironment,
-			},
-		},
+		cfg:          cfg,
+		st:           deps.Store,
+		q:            deps.Queue,
+		fetchClient:  fetch.NewHTTPClientForPolicy(pol, 30*time.Second),
+		fetchPolicy:  pol,
 		inboxMaxBody: cfg.InboxMaxBody,
 	}
 	if cfg.ActorPrivateKeyPath != "" {
@@ -225,7 +223,7 @@ func (h *Handler) SharedInbox(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing keyId in signature", http.StatusUnauthorized)
 		return
 	}
-	pub, err := fetch.PublicKeyForKeyID(r.Context(), h.fetchClient, keyID)
+	pub, err := fetch.PublicKeyForKeyID(r.Context(), h.fetchClient, h.fetchPolicy, keyID)
 	if err != nil {
 		http.Error(w, "could not resolve actor signing key", http.StatusUnauthorized)
 		return
