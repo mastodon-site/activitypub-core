@@ -12,7 +12,7 @@ import (
 
 func TestInboxURLFromReference_inboxPathPassthrough(t *testing.T) {
 	strict := &Policy{} // public address only (DOCUMENTATION-NET 192.0.2.0/24)
-	got, err := InboxURLFromReference(context.Background(), http.DefaultClient, strict, "https://192.0.2.10/users/x/inbox")
+	got, err := InboxURLFromReference(context.Background(), http.DefaultClient, strict, "https://192.0.2.10/users/x/inbox", nil)
 	if err != nil || got != "https://192.0.2.10/users/x/inbox" {
 		t.Fatalf("got %q %v", got, err)
 	}
@@ -21,7 +21,7 @@ func TestInboxURLFromReference_inboxPathPassthrough(t *testing.T) {
 // Regression (security): passthrough must still run policy (no HTTP yet, but host must be allowed).
 func TestInboxURLFromReference_strictPolicyRejectsPrivateInPassthrough(t *testing.T) {
 	strict := &Policy{}
-	_, err := InboxURLFromReference(context.Background(), http.DefaultClient, strict, "https://10.50.50.50/users/x/inbox")
+	_, err := InboxURLFromReference(context.Background(), http.DefaultClient, strict, "https://10.50.50.50/users/x/inbox", nil)
 	if err == nil {
 		t.Fatal("expected private address rejection on passthrough")
 	}
@@ -46,7 +46,7 @@ func TestInboxURLFromReference_fetchesActorInbox(t *testing.T) {
 	defer srv.Close()
 
 	actorURL := srv.URL + "/users/bob"
-	got, err := InboxURLFromReference(context.Background(), srv.Client(), LaxPolicyForTests(), actorURL)
+	got, err := InboxURLFromReference(context.Background(), srv.Client(), LaxPolicyForTests(), actorURL, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestInboxURLFromReference_detectsCycle(t *testing.T) {
 	defer srv.Close()
 
 	actorURL := srv.URL + "/users/loop"
-	_, err := InboxURLFromReference(context.Background(), srv.Client(), LaxPolicyForTests(), actorURL)
+	_, err := InboxURLFromReference(context.Background(), srv.Client(), LaxPolicyForTests(), actorURL, nil)
 	if err == nil {
 		t.Fatal("expected cycle error")
 	}
@@ -125,7 +125,7 @@ func TestInboxURLFromReference_depthMaxActorFetches(t *testing.T) {
 	defer srv.Close()
 
 	start := srv.URL + paths[0]
-	_, err := InboxURLFromReference(context.Background(), srv.Client(), LaxPolicyForTests(), start)
+	_, err := InboxURLFromReference(context.Background(), srv.Client(), LaxPolicyForTests(), start, nil)
 	if err == nil {
 		t.Fatal("expected depth error")
 	}
@@ -175,7 +175,7 @@ func TestInboxURLFromReference_allowsExactlyMaxActorFetches(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	got, err := InboxURLFromReference(context.Background(), srv.Client(), LaxPolicyForTests(), srv.URL+paths[0])
+	got, err := InboxURLFromReference(context.Background(), srv.Client(), LaxPolicyForTests(), srv.URL+paths[0], nil)
 	if err != nil {
 		t.Fatal(err)
 	}

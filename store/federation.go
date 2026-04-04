@@ -21,11 +21,16 @@ type dbQueryRow interface {
 
 // EnsureLocalActor upserts a local Person (username on this instance) and returns its database id.
 func EnsureLocalActor(ctx context.Context, pool dbQueryRow, cfg *config.Config, username string, publicKeyPEM string) (int64, error) {
-	if cfg.PublicBaseURL == "" {
-		return 0, fmt.Errorf("AP_PUBLIC_BASE_URL required for local actor")
-	}
 	if !cfg.IsLocalUsername(username) {
 		return 0, fmt.Errorf("username %q is not a configured local account", username)
+	}
+	return UpsertLocalActor(ctx, pool, cfg, username, publicKeyPEM)
+}
+
+// UpsertLocalActor upserts a local Person without checking AP_LOCAL_USERNAMES (e.g. apadmin-created accounts).
+func UpsertLocalActor(ctx context.Context, pool dbQueryRow, cfg *config.Config, username string, publicKeyPEM string) (int64, error) {
+	if cfg.PublicBaseURL == "" {
+		return 0, fmt.Errorf("AP_PUBLIC_BASE_URL required for local actor")
 	}
 	base, err := url.Parse(cfg.PublicBaseURL)
 	if err != nil {
@@ -36,9 +41,9 @@ func EnsureLocalActor(ctx context.Context, pool dbQueryRow, cfg *config.Config, 
 		return 0, fmt.Errorf("AP_PUBLIC_BASE_URL missing host")
 	}
 	root := strings.TrimRight(cfg.PublicBaseURL, "/")
-	actorURL := root + "/users/" + url.PathEscape(username)
+	actorURL := root + "/@" + url.PathEscape(username)
 	inboxURL := root + "/inbox"
-	outboxURL := root + "/outbox/" + url.PathEscape(username)
+	outboxURL := root + "/@" + url.PathEscape(username) + "/outbox"
 	pem := publicKeyPEM
 	if strings.TrimSpace(pem) == "" {
 		pem = localActorKeyPlaceholder
@@ -115,7 +120,10 @@ func InsertInboundActivity(ctx context.Context, q dbQueryRow, remoteActorDBID in
 }
 
 // OutboxPage returns total outbound activities for the local actor and up to limit IRIs (newest first).
-func OutboxPage(ctx context.Context, pool *pgxpool.Pool, localActorDBID int64, limit int) (total int64, items []string, err error) {
+// If maxID is non-nil, only rows with activities.id strictly less than *maxID are returned (older page).
+// If sinceID is non-nil, only rows with activities.id strictly greater than *sinceID are returned.
+// nextCursor is the smallest activities.id among returned rows (for the next page's max_id); nil if no next page.
+func OutboxPage(ctx context.Context, pool *pgxpool.Pool, localActorDBID int64, limit int, maxID, sinceID *int64) (total int64, items []string, nextCursor *int64, err error) {
 	if limit <= 0 {
 		limit = 50
 	}
@@ -123,22 +131,56 @@ func OutboxPage(ctx context.Context, pool *pgxpool.Pool, localActorDBID int64, l
 		limit = 200
 	}
 	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM activities WHERE actor_id = $1`, localActorDBID).Scan(&total); err != nil {
-		return 0, nil, fmt.Errorf("outbox count: %w", err)
+		return 0, nil, nil, fmt.Errorf("outbox count: %w", err)
 	}
-	rows, err := pool.Query(ctx, `
-		SELECT activity_id FROM activities WHERE actor_id = $1 ORDER BY id DESC LIMIT $2
-	`, localActorDBID, limit)
+	var rows pgx.Rows
+	switch {
+	case maxID != nil && sinceID != nil:
+		rows, err = pool.Query(ctx, `
+			SELECT id, activity_id FROM activities
+			WHERE actor_id = $1 AND id < $2 AND id > $3
+			ORDER BY id DESC LIMIT $4
+		`, localActorDBID, *maxID, *sinceID, limit)
+	case maxID != nil:
+		rows, err = pool.Query(ctx, `
+			SELECT id, activity_id FROM activities
+			WHERE actor_id = $1 AND id < $2
+			ORDER BY id DESC LIMIT $3
+		`, localActorDBID, *maxID, limit)
+	case sinceID != nil:
+		rows, err = pool.Query(ctx, `
+			SELECT id, activity_id FROM activities
+			WHERE actor_id = $1 AND id > $2
+			ORDER BY id DESC LIMIT $3
+		`, localActorDBID, *sinceID, limit)
+	default:
+		rows, err = pool.Query(ctx, `
+			SELECT id, activity_id FROM activities
+			WHERE actor_id = $1
+			ORDER BY id DESC LIMIT $2
+		`, localActorDBID, limit)
+	}
 	if err != nil {
-		return 0, nil, fmt.Errorf("outbox list: %w", err)
+		return 0, nil, nil, fmt.Errorf("outbox list: %w", err)
 	}
 	defer rows.Close()
+	var ids []int64
 	items = make([]string, 0)
 	for rows.Next() {
+		var dbID int64
 		var iri string
-		if err := rows.Scan(&iri); err != nil {
-			return 0, nil, err
+		if err := rows.Scan(&dbID, &iri); err != nil {
+			return 0, nil, nil, err
 		}
+		ids = append(ids, dbID)
 		items = append(items, iri)
 	}
-	return total, items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return 0, nil, nil, err
+	}
+	if len(items) == int(limit) && len(ids) > 0 {
+		last := ids[len(ids)-1]
+		nextCursor = &last
+	}
+	return total, items, nextCursor, nil
 }

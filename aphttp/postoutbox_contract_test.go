@@ -24,11 +24,10 @@ func TestContract_PostOutbox_requiresSecret(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mux := http.NewServeMux()
-	h.Mount(mux)
-	req := httptest.NewRequest(http.MethodPost, "https://x.test/outbox/u", bytes.NewReader([]byte(`{}`)))
+	th := testMounted(h)
+	req := httptest.NewRequest(http.MethodPost, "https://x.test/@u/outbox", bytes.NewReader([]byte(`{}`)))
 	rr := httptest.NewRecorder()
-	mux.ServeHTTP(rr, req)
+	th.ServeHTTP(rr, req)
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("got %d", rr.Code)
 	}
@@ -43,12 +42,11 @@ func TestContract_PostOutbox_requiresBearer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mux := http.NewServeMux()
-	h.Mount(mux)
-	req := httptest.NewRequest(http.MethodPost, "https://x.test/outbox/u", bytes.NewReader([]byte(`{}`)))
+	th := testMounted(h)
+	req := httptest.NewRequest(http.MethodPost, "https://x.test/@u/outbox", bytes.NewReader([]byte(`{}`)))
 	req.Header.Set("Authorization", "Bearer wrongwrongwrongwrongwrongwrong")
 	rr := httptest.NewRecorder()
-	mux.ServeHTTP(rr, req)
+	th.ServeHTTP(rr, req)
 	if rr.Code != http.StatusUnauthorized {
 		t.Fatalf("got %d", rr.Code)
 	}
@@ -118,7 +116,7 @@ func TestContract_PostOutbox_enqueuesDeliver_integration(t *testing.T) {
 	body, err := json.Marshal(map[string]any{
 		"type":   "Create",
 		"id":     "https://integration.test/o/note-1",
-		"actor":  "https://integration.test/users/localuser",
+		"actor":  "https://integration.test/@localuser",
 		"to":     remote.URL + "/users/remote",
 		"object": map[string]any{"id": "https://integration.test/obj/1", "type": "Note"},
 	})
@@ -126,13 +124,12 @@ func TestContract_PostOutbox_enqueuesDeliver_integration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mux := http.NewServeMux()
-	h.Mount(mux)
-	req := httptest.NewRequest(http.MethodPost, "https://integration.test/outbox/localuser", bytes.NewReader(body))
+	th := testMounted(h)
+	req := httptest.NewRequest(http.MethodPost, "https://integration.test/@localuser/outbox", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+secret)
 	req.Header.Set("Content-Type", "application/activity+json")
 	rr := httptest.NewRecorder()
-	mux.ServeHTTP(rr, req)
+	th.ServeHTTP(rr, req)
 	if rr.Code != http.StatusAccepted {
 		t.Fatalf("status %d %s", rr.Code, rr.Body.String())
 	}

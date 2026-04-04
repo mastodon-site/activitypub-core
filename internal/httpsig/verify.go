@@ -57,6 +57,51 @@ func VerifyRequest(r *http.Request, body []byte, pub *rsa.PublicKey) error {
 	return nil
 }
 
+// VerifyGet verifies rsa-sha256 Signature on a GET request (no Digest).
+func VerifyGet(r *http.Request, pub *rsa.PublicKey) error {
+	sigRaw := r.Header.Get("Signature")
+	if sigRaw == "" {
+		return fmt.Errorf("missing Signature header")
+	}
+	params, err := ParseSignatureHeader(sigRaw)
+	if err != nil {
+		return fmt.Errorf("signature header: %w", err)
+	}
+	alg := params["algorithm"]
+	if alg != "rsa-sha256" && alg != "hs2019" {
+		return fmt.Errorf("unsupported signature algorithm %q (need rsa-sha256)", alg)
+	}
+	sigB64 := params["signature"]
+	if sigB64 == "" {
+		return fmt.Errorf("missing signature value")
+	}
+	headerList := strings.Fields(params["headers"])
+	if len(headerList) == 0 {
+		return fmt.Errorf("missing headers list in signature")
+	}
+	for _, h := range headerList {
+		if strings.EqualFold(strings.TrimSpace(h), "digest") {
+			return fmt.Errorf("GET signature must not cover digest")
+		}
+	}
+	signingString, err := BuildSigningString(r, headerList)
+	if err != nil {
+		return err
+	}
+	sig, err := base64.StdEncoding.DecodeString(sigB64)
+	if err != nil {
+		return fmt.Errorf("signature base64: %w", err)
+	}
+	sum := sha256.Sum256([]byte(signingString))
+	if err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, sum[:], sig); err != nil {
+		return fmt.Errorf("signature verify: %w", err)
+	}
+	if err := verifyDateHeader(r.Header.Get("Date")); err != nil {
+		return err
+	}
+	return nil
+}
+
 func verifyDateHeader(date string) error {
 	date = strings.TrimSpace(date)
 	if date == "" {

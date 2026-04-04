@@ -1,0 +1,65 @@
+# Local federation / Ivory dev stack. Generate a signing key first:
+#   openssl genpkey -algorithm RSA -out private.pem -pkeyopt rsa_keygen_bits:2048
+# Then:
+#   docker compose up --build
+#
+# Ivory OAuth needs a public HTTPS URL for AP_PUBLIC_BASE_URL (e.g. ngrok); plain http://localhost is fine for curl-only checks.
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ap
+      POSTGRES_PASSWORD: ap
+      POSTGRES_DB: ap
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ap -d ap"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  apd:
+    build:
+      context: .
+      target: apd
+    command: ["/app/apd"]
+    ports:
+      - "8080:8080"
+    environment:
+      AP_DATABASE_URL: postgres://ap:ap@db:5432/ap?sslmode=disable
+      AP_QUEUE_BACKEND: sql
+      AP_PUBLIC_BASE_URL: ${AP_PUBLIC_BASE_URL:-http://localhost:8080}
+      AP_LOCAL_USERNAMES: ${AP_LOCAL_USERNAMES:-admin}
+      AP_ACTOR_PRIVATE_KEY_PATH: /run/secrets/actor.pem
+      AP_BLOB_BACKEND: filesystem
+      AP_BLOB_FS_ROOT: /data/blobs
+    volumes:
+      - blobs:/data/blobs
+      - ./private.pem:/run/secrets/actor.pem:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+  apw:
+    build:
+      context: .
+      target: apw
+    command: ["/app/apw"]
+    environment:
+      AP_DATABASE_URL: postgres://ap:ap@db:5432/ap?sslmode=disable
+      AP_QUEUE_BACKEND: sql
+      AP_PUBLIC_BASE_URL: ${AP_PUBLIC_BASE_URL:-http://localhost:8080}
+      AP_LOCAL_USERNAMES: ${AP_LOCAL_USERNAMES:-admin}
+      AP_ACTOR_PRIVATE_KEY_PATH: /run/secrets/actor.pem
+    volumes:
+      - ./private.pem:/run/secrets/actor.pem:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata: {}
+  blobs: {}

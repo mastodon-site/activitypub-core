@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/mastodon-site/activitypub-core/internal/actorkey"
+	"github.com/mastodon-site/activitypub-core/internal/config"
 )
 
 const actorAccept = "application/activity+json, application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\""
@@ -27,7 +28,8 @@ type publicKeyObj struct {
 }
 
 // PublicKeyForKeyID downloads the actor URL derived from keyId and returns the matching RSA public key.
-func PublicKeyForKeyID(ctx context.Context, client *http.Client, policy *Policy, keyID string) (*rsa.PublicKey, error) {
+// cfg may be nil; when non-nil and cfg.SignOutboundGET, the GET is signed as the instance actor.
+func PublicKeyForKeyID(ctx context.Context, client *http.Client, policy *Policy, keyID string, cfg *config.Config) (*rsa.PublicKey, error) {
 	u, err := url.Parse(keyID)
 	if err != nil {
 		return nil, fmt.Errorf("keyId URL: %w", err)
@@ -50,6 +52,9 @@ func PublicKeyForKeyID(ctx context.Context, client *http.Client, policy *Policy,
 	}
 	req.Header.Set("Accept", actorAccept)
 	req.Header.Set("User-Agent", "activitypub-core/1.0")
+	if err := PrepareActorGETRequest(req, cfg); err != nil {
+		return nil, err
+	}
 
 	resp, err := client.Do(req)
 	if err != nil {

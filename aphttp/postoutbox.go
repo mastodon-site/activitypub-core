@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mastodon-site/activitypub-core/internal/as2"
 	"github.com/mastodon-site/activitypub-core/internal/config"
@@ -39,8 +40,9 @@ func (h *Handler) PostOutbox(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "server not configured", http.StatusServiceUnavailable)
 		return
 	}
-	username := r.PathValue("username")
-	if username == "" || !h.cfg.IsLocalUsername(username) {
+	handle := r.PathValue("handle")
+	username, ok := parseAtHandle(handle)
+	if !ok || !h.IsLocalActor(username) {
 		http.NotFound(w, r)
 		return
 	}
@@ -73,13 +75,11 @@ func (h *Handler) PostOutbox(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid activity json", http.StatusBadRequest)
 		return
 	}
-	activityID, err := jsonStringField(rawFields, "id")
-	if err != nil {
+	if _, err := jsonStringField(rawFields, "id"); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	activityType, err := activityTypeString(rawFields)
-	if err != nil {
+	if _, err := activityTypeString(rawFields); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -94,10 +94,95 @@ func (h *Handler) PostOutbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	inboxes, err := resolveDeliveryInboxes(r.Context(), h.fetchClient, h.fetchPolicy, rawFields, h.cfg.LocalSharedInboxURL())
+	if err := appendFollowerCCForPublicPosts(r.Context(), h.st.Pool, localActorID, rawFields); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	body, err = json.Marshal(rawFields)
+	if err != nil {
+		http.Error(w, "internal", http.StatusInternalServerError)
+		return
+	}
+
+	inboxes, err := resolveDeliveryInboxes(r.Context(), h.fetchClient, h.fetchPolicy, h.cfg, rawFields, h.cfg.LocalSharedInboxURL())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+	if err := h.persistOutboxAndEnqueue(r.Context(), username, localActorID, body, rawFields, inboxes); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+func appendFollowerCCForPublicPosts(ctx context.Context, pool *pgxpool.Pool, localActorID int64, raw map[string]json.RawMessage) error {
+	if pool == nil {
+		return nil
+	}
+	hasPublic := false
+	for _, e := range audienceEntries(raw) {
+		if skipAudienceEntry(e) {
+			hasPublic = true
+			break
+		}
+	}
+	if !hasPublic {
+		return nil
+	}
+	urls, err := store.ListAcceptedFollowerActorURLs(ctx, pool, localActorID)
+	if err != nil {
+		return err
+	}
+	return mergeStringIRIsIntoJSONField(raw, "cc", urls)
+}
+
+func mergeStringIRIsIntoJSONField(raw map[string]json.RawMessage, key string, add []string) error {
+	if len(add) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var elems []any
+	if existing, ok := raw[key]; ok {
+		for _, s := range flattenJSONLDRefs(existing) {
+			s = strings.TrimSpace(s)
+			if s == "" {
+				continue
+			}
+			seen[s] = struct{}{}
+			elems = append(elems, s)
+		}
+	}
+	for _, s := range add {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		elems = append(elems, s)
+	}
+	if len(elems) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(elems)
+	if err != nil {
+		return err
+	}
+	raw[key] = b
+	return nil
+}
+
+func (h *Handler) persistOutboxAndEnqueue(ctx context.Context, username string, localActorID int64, body []byte, rawFields map[string]json.RawMessage, inboxes []string) error {
+	activityID, err := jsonStringField(rawFields, "id")
+	if err != nil {
+		return err
+	}
+	activityType, err := activityTypeString(rawFields)
+	if err != nil {
+		return err
 	}
 
 	type deliverJobPayload struct {
@@ -106,7 +191,6 @@ func (h *Handler) PostOutbox(w http.ResponseWriter, r *http.Request) {
 		SigningUsername string          `json:"signingUsername,omitempty"`
 		LocalUsername   string          `json:"localUsername,omitempty"`
 	}
-
 	deliverPayload := func(inbox string) ([]byte, error) {
 		return json.Marshal(deliverJobPayload{
 			InboxURL:        inbox,
@@ -117,134 +201,104 @@ func (h *Handler) PostOutbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if sqlQ, ok := h.q.(*sqlqueue.SQL); ok {
-		tx, err := h.st.Pool.Begin(r.Context())
+		tx, err := h.st.Pool.Begin(ctx)
 		if err != nil {
-			http.Error(w, "tx begin", http.StatusInternalServerError)
-			return
+			return fmt.Errorf("tx begin: %w", err)
 		}
-		defer tx.Rollback(r.Context())
+		defer tx.Rollback(ctx)
 
-		inserted, actDBID, err := store.InsertInboundActivity(r.Context(), tx, localActorID, activityID, activityType, body)
+		inserted, actDBID, err := store.InsertInboundActivity(ctx, tx, localActorID, activityID, activityType, body)
 		if err != nil {
-			http.Error(w, "persist activity", http.StatusInternalServerError)
-			return
+			return fmt.Errorf("persist activity: %w", err)
 		}
 		if !inserted {
-			if err := tx.Commit(r.Context()); err != nil {
-				http.Error(w, "tx commit", http.StatusInternalServerError)
-				return
-			}
-			w.WriteHeader(http.StatusAccepted)
-			return
+			return tx.Commit(ctx)
 		}
-		side, err := recordOutboxFollowEffects(r.Context(), tx, h.cfg, localActorID, activityID, activityType, rawFields)
+		side, err := recordOutboxFollowEffects(ctx, tx, h.cfg, localActorID, activityID, activityType, rawFields)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
+			return err
 		}
 		for _, inbox := range inboxes {
 			payload, err := deliverPayload(inbox)
 			if err != nil {
-				http.Error(w, "internal", http.StatusInternalServerError)
-				return
+				return err
 			}
 			job := queue.Job{
 				Type:           queue.TypeDeliverActivity,
 				Payload:        payload,
 				IdempotencyKey: activityID + "|" + inbox,
 			}
-			if err := sqlQ.EnqueueTx(r.Context(), tx, job); err != nil {
-				http.Error(w, "enqueue delivery", http.StatusInternalServerError)
-				return
+			if err := sqlQ.EnqueueTx(ctx, tx, job); err != nil {
+				return fmt.Errorf("enqueue delivery: %w", err)
 			}
 		}
 		if side != nil && side.enqueueInboxProcess {
 			procPayload, err := json.Marshal(map[string]int64{"activityDbId": actDBID})
 			if err != nil {
-				http.Error(w, "internal", http.StatusInternalServerError)
-				return
+				return err
 			}
 			procJob := queue.Job{
 				Type:           queue.TypeProcessInboxActivity,
 				Payload:        procPayload,
 				IdempotencyKey: activityID,
 			}
-			if err := sqlQ.EnqueueTx(r.Context(), tx, procJob); err != nil {
-				http.Error(w, "enqueue inbox process", http.StatusInternalServerError)
-				return
+			if err := sqlQ.EnqueueTx(ctx, tx, procJob); err != nil {
+				return fmt.Errorf("enqueue inbox process: %w", err)
 			}
 		}
-		if err := tx.Commit(r.Context()); err != nil {
-			http.Error(w, "tx commit", http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusAccepted)
-		return
+		return tx.Commit(ctx)
 	}
 
-	tx, err := h.st.Pool.Begin(r.Context())
+	tx, err := h.st.Pool.Begin(ctx)
 	if err != nil {
-		http.Error(w, "tx begin", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("tx begin: %w", err)
 	}
-	defer tx.Rollback(r.Context())
+	defer tx.Rollback(ctx)
 
-	inserted, actDBID, err := store.InsertInboundActivity(r.Context(), tx, localActorID, activityID, activityType, body)
+	inserted, actDBID, err := store.InsertInboundActivity(ctx, tx, localActorID, activityID, activityType, body)
 	if err != nil {
-		http.Error(w, "persist activity", http.StatusInternalServerError)
-		return
+		return fmt.Errorf("persist activity: %w", err)
 	}
 	if !inserted {
-		if err := tx.Commit(r.Context()); err != nil {
-			http.Error(w, "tx commit", http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusAccepted)
-		return
+		return tx.Commit(ctx)
 	}
-	side, err := recordOutboxFollowEffects(r.Context(), tx, h.cfg, localActorID, activityID, activityType, rawFields)
+	side, err := recordOutboxFollowEffects(ctx, tx, h.cfg, localActorID, activityID, activityType, rawFields)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return err
 	}
-	if err := tx.Commit(r.Context()); err != nil {
-		http.Error(w, "tx commit", http.StatusInternalServerError)
-		return
+	if err := tx.Commit(ctx); err != nil {
+		return err
 	}
 
 	for _, inbox := range inboxes {
 		payload, err := deliverPayload(inbox)
 		if err != nil {
-			http.Error(w, "internal", http.StatusInternalServerError)
-			return
+			return err
 		}
 		job := queue.Job{
 			Type:           queue.TypeDeliverActivity,
 			Payload:        payload,
 			IdempotencyKey: activityID + "|" + inbox,
 		}
-		if err := h.q.Enqueue(r.Context(), job); err != nil {
-			http.Error(w, "enqueue delivery", http.StatusInternalServerError)
-			return
+		if err := h.q.Enqueue(ctx, job); err != nil {
+			return fmt.Errorf("enqueue delivery: %w", err)
 		}
 	}
 	if side != nil && side.enqueueInboxProcess {
 		procPayload, err := json.Marshal(map[string]int64{"activityDbId": actDBID})
 		if err != nil {
-			http.Error(w, "internal", http.StatusInternalServerError)
-			return
+			return err
 		}
 		procJob := queue.Job{
 			Type:           queue.TypeProcessInboxActivity,
 			Payload:        procPayload,
 			IdempotencyKey: activityID,
 		}
-		if err := h.q.Enqueue(r.Context(), procJob); err != nil {
-			http.Error(w, "enqueue inbox process", http.StatusInternalServerError)
-			return
+		if err := h.q.Enqueue(ctx, procJob); err != nil {
+			return fmt.Errorf("enqueue inbox process: %w", err)
 		}
 	}
-	w.WriteHeader(http.StatusAccepted)
+	return nil
 }
 
 type outboxFollowSideEffect struct {
@@ -383,7 +437,7 @@ func skipAudienceEntry(s string) bool {
 	return false
 }
 
-func resolveDeliveryInboxes(ctx context.Context, client *http.Client, policy *fetch.Policy, raw map[string]json.RawMessage, localSharedInbox string) ([]string, error) {
+func resolveDeliveryInboxes(ctx context.Context, client *http.Client, policy *fetch.Policy, cfg *config.Config, raw map[string]json.RawMessage, localSharedInbox string) ([]string, error) {
 	entries := audienceEntries(raw)
 	normLocal := strings.TrimRight(localSharedInbox, "/")
 	var resolved []string
@@ -392,7 +446,7 @@ func resolveDeliveryInboxes(ctx context.Context, client *http.Client, policy *fe
 		if skipAudienceEntry(e) {
 			continue
 		}
-		inbox, err := fetch.InboxURLFromReference(ctx, client, policy, e)
+		inbox, err := fetch.InboxURLFromReference(ctx, client, policy, e, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", e, err)
 		}

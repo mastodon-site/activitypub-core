@@ -33,6 +33,7 @@ import (
 	"github.com/mastodon-site/activitypub-core/queue"
 	"github.com/mastodon-site/activitypub-core/queue/redisqueue"
 	"github.com/mastodon-site/activitypub-core/queue/sqlqueue"
+	"github.com/mastodon-site/activitypub-core/store"
 	"github.com/mastodon-site/activitypub-core/store/postgres"
 )
 
@@ -163,7 +164,7 @@ func processJob(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, q q
 	case queue.TypeNoop:
 		return nil
 	case queue.TypeDeliverActivity:
-		return deliverActivity(ctx, cfg, fetch.NewHTTPClient(cfg, 60*time.Second), lease.Payload)
+		return deliverActivity(ctx, cfg, pool, fetch.NewHTTPClient(cfg, 60*time.Second), lease.Payload)
 	case queue.TypeProcessInboxActivity:
 		if pool == nil {
 			return fmt.Errorf("process_inbox_activity requires AP_DATABASE_URL (postgres pool)")
@@ -201,7 +202,7 @@ func signingUsernameForDelivery(p deliverPayload, cfg *config.Config) string {
 	return cfg.LocalUsername
 }
 
-func deliverActivity(ctx context.Context, cfg *config.Config, client *http.Client, raw json.RawMessage) error {
+func deliverActivity(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, client *http.Client, raw json.RawMessage) error {
 	if cfg.ActorPrivateKeyPath == "" {
 		return fmt.Errorf("AP_ACTOR_PRIVATE_KEY_PATH required for deliver_activity")
 	}
@@ -220,10 +221,26 @@ func deliverActivity(ctx context.Context, cfg *config.Config, client *http.Clien
 		return fmt.Errorf("deliver_activity: inboxUrl and body required")
 	}
 	user := signingUsernameForDelivery(p, cfg)
-	if user == "" || !cfg.IsLocalUsername(user) {
+	if user == "" {
+		return fmt.Errorf("deliver_activity: signing user required")
+	}
+	base, err := url.Parse(cfg.PublicBaseURL)
+	if err != nil {
+		return fmt.Errorf("deliver_activity: public base url: %w", err)
+	}
+	domain := base.Hostname()
+	if pool != nil {
+		ok, err := store.LocalActorUsernameExists(ctx, pool, domain, user)
+		if err != nil {
+			return fmt.Errorf("deliver_activity: %w", err)
+		}
+		if !ok {
+			return fmt.Errorf("deliver_activity: signing user %q is not a local account", user)
+		}
+	} else if !cfg.IsLocalUsername(user) {
 		return fmt.Errorf("deliver_activity: signing user %q is not a configured local account", user)
 	}
-	keyID := strings.TrimRight(cfg.PublicBaseURL, "/") + "/users/" + url.PathEscape(user) + "#main-key"
+	keyID := cfg.LocalActorProfileURL(user) + "#main-key"
 	req, err := httpsig.NewSignedPost(p.InboxURL, p.Body, keyID, priv)
 	if err != nil {
 		return err

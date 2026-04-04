@@ -54,3 +54,11 @@ func ActorIDByActorURLQ(ctx context.Context, q interface {
 	}
 	return id, nil
 }
+
+// ActorProfileByID loads actor_url, username, and domain for a row id.
+func ActorProfileByID(ctx context.Context, pool *pgxpool.Pool, id int64) (actorURL, username, domain string, err error) {
+	err = pool.QueryRow(ctx, `
+		SELECT actor_url, username, domain FROM actors WHERE id = $1
+	`, id).Scan(&actorURL, &username, &domain)
+	return actorURL, username, domain, err
+}

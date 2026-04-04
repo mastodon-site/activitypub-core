@@ -20,7 +20,7 @@ import (
 func truncateFederationTables(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
-	_, err := pool.Exec(ctx, `TRUNCATE TABLE queue_jobs, deliveries, follows, activities, objects, actors RESTART IDENTITY CASCADE`)
+	_, err := pool.Exec(ctx, `TRUNCATE TABLE queue_jobs, deliveries, follows, federated_likes, federated_announces, federated_blocks, activities, objects, actors RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
@@ -236,14 +236,13 @@ func TestIntegration_outboxOrderedCollectionJSONShape(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	mux := http.NewServeMux()
-	h.Mount(mux)
+	th := testMounted(h)
 
 	t.Run("activity_json_accept", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "https://integration.test/outbox/localuser", nil)
+		req := httptest.NewRequest(http.MethodGet, "https://integration.test/@localuser/outbox", nil)
 		req.Header.Set("Accept", "application/activity+json")
 		rr := httptest.NewRecorder()
-		mux.ServeHTTP(rr, req)
+		th.ServeHTTP(rr, req)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status %d %s", rr.Code, rr.Body.String())
 		}
@@ -254,11 +253,14 @@ func TestIntegration_outboxOrderedCollectionJSONShape(t *testing.T) {
 		if doc["@context"] != "https://www.w3.org/ns/activitystreams" {
 			t.Fatalf("@context %#v", doc["@context"])
 		}
-		if doc["type"] != "OrderedCollection" {
+		if doc["type"] != "OrderedCollectionPage" {
 			t.Fatalf("type %#v", doc["type"])
 		}
-		if doc["id"] != "https://integration.test/outbox/localuser" {
+		if doc["id"] != "https://integration.test/@localuser/outbox" {
 			t.Fatalf("id %#v", doc["id"])
+		}
+		if doc["partOf"] != "https://integration.test/@localuser/outbox" {
+			t.Fatalf("partOf %#v", doc["partOf"])
 		}
 		if tot, ok := doc["totalItems"].(float64); !ok || int64(tot) != 2 {
 			t.Fatalf("totalItems %#v", doc["totalItems"])
@@ -273,9 +275,9 @@ func TestIntegration_outboxOrderedCollectionJSONShape(t *testing.T) {
 	})
 
 	t.Run("ld_json_default", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "https://integration.test/outbox/localuser", nil)
+		req := httptest.NewRequest(http.MethodGet, "https://integration.test/@localuser/outbox", nil)
 		rr := httptest.NewRecorder()
-		mux.ServeHTTP(rr, req)
+		th.ServeHTTP(rr, req)
 		if rr.Code != http.StatusOK {
 			t.Fatal(rr.Code)
 		}
@@ -286,9 +288,9 @@ func TestIntegration_outboxOrderedCollectionJSONShape(t *testing.T) {
 	})
 
 	t.Run("wrong_username_404", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "https://integration.test/outbox/nope", nil)
+		req := httptest.NewRequest(http.MethodGet, "https://integration.test/@nope/outbox", nil)
 		rr := httptest.NewRecorder()
-		mux.ServeHTTP(rr, req)
+		th.ServeHTTP(rr, req)
 		if rr.Code != http.StatusNotFound {
 			t.Fatalf("status %d", rr.Code)
 		}
@@ -299,11 +301,10 @@ func TestIntegration_outboxOrderedCollectionJSONShape(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		muxBare := http.NewServeMux()
-		hBare.Mount(muxBare)
-		req := httptest.NewRequest(http.MethodGet, "https://integration.test/outbox/localuser", nil)
+		thBare := testMounted(hBare)
+		req := httptest.NewRequest(http.MethodGet, "https://integration.test/@localuser/outbox", nil)
 		rr := httptest.NewRecorder()
-		muxBare.ServeHTTP(rr, req)
+		thBare.ServeHTTP(rr, req)
 		if rr.Code != http.StatusServiceUnavailable {
 			t.Fatalf("status %d", rr.Code)
 		}
