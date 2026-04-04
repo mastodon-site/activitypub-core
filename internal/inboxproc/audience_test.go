@@ -96,6 +96,25 @@ func TestActivityShouldApplySideEffects_audienceField(t *testing.T) {
 	}
 }
 
+func TestActivityShouldApplySideEffects_mastodonUsersPathInTo(t *testing.T) {
+	cfg := &config.Config{PublicBaseURL: "https://i.test", LocalUsername: "alice", LocalUsernames: []string{"alice"}}
+	alias := "https://i.test/users/alice"
+	fields := map[string]json.RawMessage{"to": mustRawStr(t, `"`+alias+`"`)}
+	if !activityShouldApplySideEffects(cfg, fields) {
+		t.Fatal("Mastodon-style /users/{name} should count as addressing a local recipient")
+	}
+}
+
+func TestActivityShouldApplySideEffects_instanceActorInCc(t *testing.T) {
+	cfg := &config.Config{PublicBaseURL: "https://i.test", LocalUsername: "a", LocalUsernames: []string{"a"}}
+	fields := map[string]json.RawMessage{
+		"cc": mustRawArr(t, []string{"https://somewhere.test/u", cfg.InstanceActorIRI()}),
+	}
+	if !activityShouldApplySideEffects(cfg, fields) {
+		t.Fatal("instance actor IRI in cc should apply")
+	}
+}
+
 func TestAudienceIRIs_dedupes(t *testing.T) {
 	cfg := map[string]json.RawMessage{
 		"to":  mustRawArr(t, []string{"https://x/u", "https://x/u"}),

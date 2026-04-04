@@ -24,10 +24,12 @@ func handleFollow(ctx context.Context, pool *pgxpool.Pool, q queue.Backend, cfg 
 	if err != nil {
 		return err
 	}
-	if _, ok := cfg.LocalUsernameForActorURL(objectIRI); !ok {
+	followeeUser, ok := cfg.LocalUsernameForInboundFollowObject(objectIRI)
+	if !ok {
 		return fmt.Errorf("follow object is not a local actor")
 	}
-	followeeID, err := store.ActorIDByActorURL(ctx, pool, objectIRI)
+	// DB rows use canonical /@ profile IRIs; remote software may use /users/… in Follow.object.
+	followeeID, err := store.ActorIDByActorURL(ctx, pool, cfg.LocalActorProfileURL(followeeUser))
 	if err != nil {
 		return fmt.Errorf("followee actor: %w", err)
 	}
@@ -42,8 +44,7 @@ func handleFollow(ctx context.Context, pool *pgxpool.Pool, q queue.Backend, cfg 
 	if err := pool.QueryRow(ctx, `SELECT actor_url FROM actors WHERE id = $1`, followeeID).Scan(&followeeActorURL); err != nil {
 		return err
 	}
-	followeeUser, ok := cfg.LocalUsernameForActorURL(followeeActorURL)
-	if !ok {
+	if _, ok := cfg.LocalUsernameForActorURL(followeeActorURL); !ok {
 		return fmt.Errorf("followee id %d not local", followeeID)
 	}
 	var followerActorURL string

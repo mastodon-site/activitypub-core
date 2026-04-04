@@ -30,7 +30,7 @@ func activityShouldApplySideEffects(cfg *config.Config, fields map[string]json.R
 		if strings.TrimRight(r, "/") == shared {
 			return true
 		}
-		if _, ok := cfg.LocalUsernameForActorURL(r); ok {
+		if cfg.RefAddressesLocalRecipient(r) {
 			return true
 		}
 	}

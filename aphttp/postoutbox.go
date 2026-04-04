@@ -327,7 +327,7 @@ func recordOutboxFollowEffects(
 		if followeeID == localActorID {
 			return nil, fmt.Errorf("cannot follow self")
 		}
-		if _, ok := cfg.LocalUsernameForActorURL(store.CanonicalActorURL(objIRI)); ok {
+		if _, ok := cfg.LocalUsernameForInboundFollowObject(store.CanonicalActorURL(objIRI)); ok {
 			return &outboxFollowSideEffect{enqueueInboxProcess: true}, nil
 		}
 		if err := store.UpsertFollow(ctx, tx, localActorID, followeeID, activityID, store.FollowStatePendingRemote); err != nil {
@@ -358,8 +358,8 @@ func normalizedOutboxActivityType(t string) string {
 
 func resolveFolloweeActorID(ctx context.Context, tx pgx.Tx, cfg *config.Config, objectIRI string) (int64, error) {
 	canon := store.CanonicalActorURL(objectIRI)
-	if _, ok := cfg.LocalUsernameForActorURL(canon); ok {
-		return store.ActorIDByActorURLQ(ctx, tx, canon)
+	if u, ok := cfg.LocalUsernameForInboundFollowObject(canon); ok {
+		return store.ActorIDByActorURLQ(ctx, tx, cfg.LocalActorProfileURL(u))
 	}
 	return store.EnsureRemoteActor(ctx, tx, canon, "(remote-followee)")
 }

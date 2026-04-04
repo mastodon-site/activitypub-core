@@ -335,6 +335,75 @@ func TestIntegration_outboundFollow_localFollowee_enqueuesProcessInbox_andAccept
 	}
 }
 
+// Local-local outbound follow where object uses /users/{name} alias (compatibility with common non-canonical IRIs).
+func TestIntegration_outboundFollow_localFollowee_usersPathObject_works(t *testing.T) {
+	ctx := context.Background()
+	dsn := integrationDatabaseURL(t)
+	if err := migrate.Up(dsn, findMigrationsDir(t)); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	truncateFederationTables(t, pool)
+
+	secret := "0123456789abcdef0123456789abcdef"
+	rec := &recordingQueue{}
+	cfg := &config.Config{
+		PublicBaseURL:    "https://integration.test",
+		LocalUsernames:   []string{"alice", "bob"},
+		LocalUsername:    "alice",
+		OutboxPostSecret: secret,
+		InboxMaxBody:     1 << 20,
+		FollowAutoAccept: true,
+	}
+	st := &store.Postgres{Pool: pool}
+	h, err := New(cfg, Deps{Store: st, Queue: rec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyTestingFetchPolicy(h)
+	h.fetchClient = localProfileFetchClient(cfg.PublicBaseURL)
+
+	followID := "https://integration.test/activities/alice-follows-bob-users"
+	body := mustJSON(t, map[string]any{
+		"type":   "Follow",
+		"id":     followID,
+		"actor":  cfg.LocalActorProfileURL("alice"),
+		"object": "https://integration.test/users/bob",
+		"to":     cfg.LocalActorProfileURL("bob"),
+	})
+	th := testMounted(h)
+	req := httptest.NewRequest(http.MethodPost, "https://integration.test/@alice/outbox", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+secret)
+	req.Header.Set("Content-Type", "application/activity+json")
+	rr := httptest.NewRecorder()
+	th.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status %d %s", rr.Code, rr.Body.String())
+	}
+
+	var actDBID int64
+	if err := pool.QueryRow(ctx, `SELECT id FROM activities WHERE activity_id = $1`, followID).Scan(&actDBID); err != nil {
+		t.Fatal(err)
+	}
+	if err := inboxproc.ProcessInboxActivity(ctx, pool, rec, cfg, h.fetchClient, actDBID, fetch.TestingPolicy()); err != nil {
+		t.Fatal(err)
+	}
+
+	aliceID := h.localActorIDs["alice"]
+	bobID := h.localActorIDs["bob"]
+	stFollow, err := store.GetFollowState(ctx, pool, aliceID, bobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stFollow != store.FollowStateAccepted {
+		t.Fatalf("follow state %q want accepted", stFollow)
+	}
+}
+
 func TestIntegration_outboundFollow_remoteRecordsPendingRemote_andDelivers(t *testing.T) {
 	ctx := context.Background()
 	dsn := integrationDatabaseURL(t)

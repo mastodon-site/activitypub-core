@@ -206,6 +206,85 @@ func (c *Config) LocalUsernameForActorURL(actorURL string) (string, bool) {
 	return "", false
 }
 
+// LocalUsernameForInboundFollowObject returns the local username when an IRI on this host refers to a
+// configured local actor, for federation compatibility:
+//
+//   - Canonical profile: https://domain/@username (what we publish in actor JSON and WebFinger)
+//   - Alias profile:     https://domain/users/username (common third-party / tooling convention)
+//
+// Use for inbound Follow.object, outbound follow resolution, and addressing (via RefAddressesLocalRecipient).
+func (c *Config) LocalUsernameForInboundFollowObject(objectIRI string) (string, bool) {
+	if u, ok := c.LocalUsernameForActorURL(objectIRI); ok {
+		return u, true
+	}
+	objectIRI = strings.TrimSpace(objectIRI)
+	if objectIRI == "" || c.PublicBaseURL == "" {
+		return "", false
+	}
+	obj, err := url.Parse(objectIRI)
+	if err != nil || obj.Host == "" {
+		return "", false
+	}
+	base, err := url.Parse(c.PublicBaseURL)
+	if err != nil || base.Hostname() == "" {
+		return "", false
+	}
+	if !strings.EqualFold(obj.Hostname(), base.Hostname()) {
+		return "", false
+	}
+	path := strings.Trim(obj.Path, "/")
+	if path == "" {
+		return "", false
+	}
+	if strings.HasPrefix(path, "@") {
+		rest := strings.TrimPrefix(path, "@")
+		handle, _, _ := strings.Cut(rest, "/")
+		handle, err = url.PathUnescape(handle)
+		if err != nil {
+			return "", false
+		}
+		if handle != "" && c.IsLocalUsername(handle) {
+			return handle, true
+		}
+		return "", false
+	}
+	parts := strings.Split(path, "/")
+	if len(parts) >= 2 && parts[0] == "users" {
+		handle, err := url.PathUnescape(parts[1])
+		if err != nil {
+			return "", false
+		}
+		if handle != "" && c.IsLocalUsername(handle) {
+			return handle, true
+		}
+	}
+	return "", false
+}
+
+// RefAddressesLocalRecipient reports whether ref is an IRI that targets this instance for delivery —
+// a local user's profile (see LocalUsernameForInboundFollowObject) or the instance actor document.
+// Used when scanning to/cc/bto/bcc/audience.
+func (c *Config) RefAddressesLocalRecipient(ref string) bool {
+	if _, ok := c.LocalUsernameForInboundFollowObject(ref); ok {
+		return true
+	}
+	if c.PublicBaseURL == "" {
+		return false
+	}
+	inst := strings.TrimSpace(c.InstanceActorIRI())
+	if inst == "" {
+		return false
+	}
+	uInst, err1 := url.Parse(inst)
+	uRef, err2 := url.Parse(strings.TrimSpace(ref))
+	if err1 == nil && err2 == nil && uInst.Host != "" && uRef.Host != "" &&
+		strings.EqualFold(uInst.Hostname(), uRef.Hostname()) &&
+		strings.TrimRight(uInst.Path, "/") == strings.TrimRight(uRef.Path, "/") {
+		return true
+	}
+	return false
+}
+
 func getenv(k, def string) string {
 	v := os.Getenv(k)
 	if v == "" {
