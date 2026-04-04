@@ -51,7 +51,10 @@ func main() {
 		if mp := os.Getenv("AP_MIGRATIONS_DIR"); mp != "" {
 			migrationsDir = mp
 		}
-		abs, _ := filepath.Abs(migrationsDir)
+		abs, err := filepath.Abs(migrationsDir)
+		if err != nil {
+			log.Fatalf("migrations path: %v", err)
+		}
 		if err := migrate.Up(cfg.DatabaseURL, abs); err != nil {
 			log.Fatalf("migrate: %v", err)
 		}
