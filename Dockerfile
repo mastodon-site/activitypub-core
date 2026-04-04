@@ -13,6 +13,7 @@ FROM alpine:3.23 AS apd
 RUN apk add --no-cache ca-certificates tzdata
 WORKDIR /app
 COPY --from=build /out/apd /app/apd
+COPY --from=build /out/apadmin /app/apadmin
 COPY --from=build /src/db/migrations /app/db/migrations
 EXPOSE 8080
 CMD ["/app/apd"]
