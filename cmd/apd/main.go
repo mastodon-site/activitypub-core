@@ -57,7 +57,10 @@ func main() {
 	mux.HandleFunc("GET /health/live", aphttp.Health)
 	mux.Handle("GET /health/ready", observability.InstrumentHandler("health_ready", http.HandlerFunc(aphttp.Ready(st))))
 
-	ap := aphttp.New(cfg)
+	ap, err := aphttp.New(cfg)
+	if err != nil {
+		log.Fatalf("aphttp: %v", err)
+	}
 	ap.Mount(mux)
 
 	// Metrics on same mux unless separate listener configured separately (TODO split server if AP_METRICS_LISTEN set).
