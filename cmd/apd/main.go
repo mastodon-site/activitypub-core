@@ -108,7 +108,9 @@ func main() {
 		log.Printf("AP_METRICS_LISTEN set to %q — metrics still on main mux; split listener not implemented in bootstrap", cfg.MetricsListen)
 	}
 
-	handler := observability.InstrumentHandler("http", ap.WithLegacy(ap.WithAtPaths(mux)))
+	chain := ap.WithLegacy(ap.WithAtPaths(mux))
+	chain = aphttp.WithCORS(cfg.CORSAllowOrigins, chain)
+	handler := observability.InstrumentHandler("http", chain)
 
 	srv := &http.Server{
 		Addr:              addr,

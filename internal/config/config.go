@@ -71,6 +71,11 @@ type Config struct {
 	OpenRegistrations bool
 	// SoftwareVersion is reported in NodeInfo (AP_SOFTWARE_VERSION).
 	SoftwareVersion string
+
+	// CORSAllowOrigins lists permitted browser Origins for cross-origin API access (AP_CORS_ALLOW_ORIGINS,
+	// comma-separated, e.g. https://app.example or http://localhost:5173). Use "*" for any origin
+	// (no credentials). Empty leaves CORS disabled in apd.
+	CORSAllowOrigins []string
 }
 
 // Load reads configuration from environment variables.
@@ -100,6 +105,14 @@ func Load() (*Config, error) {
 		InstanceName:                strings.TrimSpace(os.Getenv("AP_INSTANCE_NAME")),
 		InstanceDescription:         strings.TrimSpace(os.Getenv("AP_INSTANCE_DESCRIPTION")),
 		SoftwareVersion:             getenv("AP_SOFTWARE_VERSION", "dev"),
+	}
+	if v := strings.TrimSpace(os.Getenv("AP_CORS_ALLOW_ORIGINS")); v != "" {
+		for _, part := range strings.Split(v, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				c.CORSAllowOrigins = append(c.CORSAllowOrigins, part)
+			}
+		}
 	}
 	if c.QueueBackend != "sql" && c.QueueBackend != "redis" {
 		return nil, fmt.Errorf("AP_QUEUE_BACKEND must be sql or redis, got %q", c.QueueBackend)
