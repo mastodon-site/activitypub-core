@@ -62,6 +62,15 @@ type Config struct {
 
 	WorkerConcurrency  int
 	WorkerPollInterval time.Duration
+
+	// InstanceName is a human-readable title for NodeInfo / discovery (AP_INSTANCE_NAME); default: public host.
+	InstanceName string
+	// InstanceDescription is a short blurb for NodeInfo metadata (AP_INSTANCE_DESCRIPTION).
+	InstanceDescription string
+	// OpenRegistrations is exposed in NodeInfo when true (AP_OPEN_REGISTRATIONS); not wired to account signup by itself.
+	OpenRegistrations bool
+	// SoftwareVersion is reported in NodeInfo (AP_SOFTWARE_VERSION).
+	SoftwareVersion string
 }
 
 // Load reads configuration from environment variables.
@@ -88,6 +97,9 @@ func Load() (*Config, error) {
 		BlobS3Region:                getenv("AP_BLOB_S3_REGION", "us-east-1"),
 		WorkerConcurrency:           getenvInt("AP_WORKER_CONCURRENCY", 2),
 		WorkerPollInterval:          getenvDuration("AP_WORKER_POLL_INTERVAL", 2*time.Second),
+		InstanceName:                strings.TrimSpace(os.Getenv("AP_INSTANCE_NAME")),
+		InstanceDescription:         strings.TrimSpace(os.Getenv("AP_INSTANCE_DESCRIPTION")),
+		SoftwareVersion:             getenv("AP_SOFTWARE_VERSION", "dev"),
 	}
 	if c.QueueBackend != "sql" && c.QueueBackend != "redis" {
 		return nil, fmt.Errorf("AP_QUEUE_BACKEND must be sql or redis, got %q", c.QueueBackend)
@@ -126,6 +138,9 @@ func Load() (*Config, error) {
 	}
 	if truthyEnv("AP_SIGN_GET") {
 		c.SignOutboundGET = true
+	}
+	if truthyEnv("AP_OPEN_REGISTRATIONS") {
+		c.OpenRegistrations = true
 	}
 
 	return c, nil
@@ -174,6 +189,35 @@ func (c *Config) LocalActorFollowingURL(username string) string {
 	return root + "/@" + url.PathEscape(username) + "/following"
 }
 
+// LocalActorInboxURL returns the per-actor inbox IRI (POST target). Shared delivery still uses endpoints.sharedInbox.
+func (c *Config) LocalActorInboxURL(username string) string {
+	root := strings.TrimRight(c.PublicBaseURL, "/")
+	return root + "/@" + url.PathEscape(username) + "/inbox"
+}
+
+// IsAddressingThisInstanceInbox reports whether ref is the shared inbox or any local actor's inbox IRI.
+func (c *Config) IsAddressingThisInstanceInbox(ref string) bool {
+	if c == nil || strings.TrimSpace(c.PublicBaseURL) == "" {
+		return false
+	}
+	r := strings.TrimRight(strings.TrimSpace(ref), "/")
+	if r == "" {
+		return false
+	}
+	if r == strings.TrimRight(c.LocalSharedInboxURL(), "/") {
+		return true
+	}
+	for _, u := range c.LocalUsernames {
+		if r == strings.TrimRight(c.LocalActorInboxURL(u), "/") {
+			return true
+		}
+	}
+	if len(c.LocalUsernames) == 0 && strings.TrimSpace(c.LocalUsername) != "" {
+		return r == strings.TrimRight(c.LocalActorInboxURL(c.LocalUsername), "/")
+	}
+	return false
+}
+
 // InstanceActorIRI returns the canonical instance actor document URL (trailing path normalized).
 func (c *Config) InstanceActorIRI() string {
 	return strings.TrimRight(c.PublicBaseURL, "/") + "/.well-known/actor"
@@ -187,6 +231,23 @@ func (c *Config) InstanceActorKeyID() string {
 // LocalSharedInboxURL returns the shared inbox IRI for this instance.
 func (c *Config) LocalSharedInboxURL() string {
 	return strings.TrimRight(c.PublicBaseURL, "/") + "/inbox"
+}
+
+// WebFingerTemplateURL is the RFC 7033 lrdd template (host-meta / WebFinger discovery).
+func (c *Config) WebFingerTemplateURL() string {
+	return strings.TrimRight(strings.TrimSpace(c.PublicBaseURL), "/") + "/.well-known/webfinger?resource={uri}"
+}
+
+// InstanceDisplayName returns AP_INSTANCE_NAME or the public hostname from AP_PUBLIC_BASE_URL.
+func (c *Config) InstanceDisplayName() string {
+	if strings.TrimSpace(c.InstanceName) != "" {
+		return strings.TrimSpace(c.InstanceName)
+	}
+	u, err := url.Parse(strings.TrimSpace(c.PublicBaseURL))
+	if err == nil && u.Hostname() != "" {
+		return u.Hostname()
+	}
+	return "activitypub-core"
 }
 
 // LocalUsernameForActorURL returns the local username if actorURL is one of our profiles.

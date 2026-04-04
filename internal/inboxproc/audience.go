@@ -18,7 +18,6 @@ func activityShouldApplySideEffects(cfg *config.Config, fields map[string]json.R
 	if len(refs) == 0 {
 		return true
 	}
-	shared := strings.TrimRight(cfg.LocalSharedInboxURL(), "/")
 	for _, r := range refs {
 		r = strings.TrimSpace(r)
 		if r == "" {
@@ -27,7 +26,7 @@ func activityShouldApplySideEffects(cfg *config.Config, fields map[string]json.R
 		if isASPublicRef(r) {
 			return true
 		}
-		if strings.TrimRight(r, "/") == shared {
+		if cfg.IsAddressingThisInstanceInbox(r) {
 			return true
 		}
 		if cfg.RefAddressesLocalRecipient(r) {

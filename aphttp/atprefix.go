@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// WithAtPaths dispatches /@username, /@username/outbox, /@username/followers, /@username/following before next.
+// WithAtPaths dispatches /@username, /@username/inbox (POST), /@username/outbox, /@username/followers, /@username/following before next.
 func (h *Handler) WithAtPaths(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if h.tryServeAtPath(w, r) {
@@ -40,6 +40,20 @@ func (h *Handler) tryServeAtPath(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		}
 		switch {
+		case subSeg == "inbox":
+			if !h.IsLocalActor(username) {
+				http.NotFound(w, r)
+				return true
+			}
+			switch r.Method {
+			case http.MethodPost:
+				h.SharedInbox(w, cloneRequestWithPathValue(r, "handle", handle))
+			case http.MethodGet:
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			default:
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			}
+			return true
 		case subSeg == "outbox" && r.Method == http.MethodGet:
 			h.GetOutbox(w, cloneRequestWithPathValue(r, "handle", handle))
 			return true

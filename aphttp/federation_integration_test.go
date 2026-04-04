@@ -310,3 +310,126 @@ func TestIntegration_outboxOrderedCollectionJSONShape(t *testing.T) {
 		}
 	})
 }
+
+func TestIntegration_inbox_perActorAtPathPersistsLikeShared(t *testing.T) {
+	ctx := context.Background()
+	dsn := integrationDatabaseURL(t)
+	if err := migrate.Up(dsn, findMigrationsDir(t)); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	truncateFederationTables(t, pool)
+
+	fix := newActorFixture(t)
+	rec := &recordingQueue{}
+	cfg := &config.Config{
+		PublicBaseURL: "https://integration.test",
+		LocalUsername: "localuser",
+		InboxMaxBody:  1 << 20,
+	}
+	st := &store.Postgres{Pool: pool}
+	h, err := New(cfg, Deps{Store: st, Queue: rec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyTestingFetchPolicy(h)
+	h.fetchClient = fix.Client
+	th := testMounted(h)
+
+	actorBase := strings.TrimSuffix(fix.KeyID, "#main-key")
+	actID := "https://remote.test/activities/post-at-inbox"
+	body := mustJSON(t, map[string]any{"type": "Create", "id": actID, "actor": actorBase})
+	req := mustSignedPost(t, "https://integration.test/@localuser/inbox", body, fix.KeyID, fix.Priv)
+	rr := httptest.NewRecorder()
+	th.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status %d %s", rr.Code, rr.Body.String())
+	}
+
+	var dbCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM activities WHERE activity_id = $1`, actID).Scan(&dbCount); err != nil {
+		t.Fatal(err)
+	}
+	if dbCount != 1 {
+		t.Fatalf("activities count = %d", dbCount)
+	}
+	if n := len(rec.snapshotJobs()); n != 1 {
+		t.Fatalf("enqueued jobs: %d", n)
+	}
+
+	rr2 := httptest.NewRecorder()
+	th.ServeHTTP(rr2, mustSignedPost(t, "https://integration.test/@localuser/inbox", body, fix.KeyID, fix.Priv))
+	if rr2.Code != http.StatusAccepted {
+		t.Fatalf("duplicate status %d", rr2.Code)
+	}
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM activities WHERE activity_id = $1`, actID).Scan(&dbCount); err != nil {
+		t.Fatal(err)
+	}
+	if dbCount != 1 {
+		t.Fatalf("after duplicate, activities count = %d", dbCount)
+	}
+}
+
+func TestIntegration_inbox_legacyUsersPathPersistsLikeShared(t *testing.T) {
+	ctx := context.Background()
+	dsn := integrationDatabaseURL(t)
+	if err := migrate.Up(dsn, findMigrationsDir(t)); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	truncateFederationTables(t, pool)
+
+	fix := newActorFixture(t)
+	rec := &recordingQueue{}
+	cfg := &config.Config{
+		PublicBaseURL: "https://integration.test",
+		LocalUsername: "localuser",
+		InboxMaxBody:  1 << 20,
+	}
+	st := &store.Postgres{Pool: pool}
+	h, err := New(cfg, Deps{Store: st, Queue: rec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	applyTestingFetchPolicy(h)
+	h.fetchClient = fix.Client
+	th := testMounted(h)
+
+	actorBase := strings.TrimSuffix(fix.KeyID, "#main-key")
+	actID := "https://remote.test/activities/post-users-inbox"
+	body := mustJSON(t, map[string]any{"type": "Create", "id": actID, "actor": actorBase})
+	req := mustSignedPost(t, "https://integration.test/users/localuser/inbox", body, fix.KeyID, fix.Priv)
+	rr := httptest.NewRecorder()
+	th.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status %d %s", rr.Code, rr.Body.String())
+	}
+
+	var dbCount int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM activities WHERE activity_id = $1`, actID).Scan(&dbCount); err != nil {
+		t.Fatal(err)
+	}
+	if dbCount != 1 {
+		t.Fatalf("activities count = %d", dbCount)
+	}
+
+	rr2 := httptest.NewRecorder()
+	th.ServeHTTP(rr2, mustSignedPost(t, "https://integration.test/users/localuser/inbox", body, fix.KeyID, fix.Priv))
+	if rr2.Code != http.StatusAccepted {
+		t.Fatalf("duplicate status %d", rr2.Code)
+	}
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM activities WHERE activity_id = $1`, actID).Scan(&dbCount); err != nil {
+		t.Fatal(err)
+	}
+	if dbCount != 1 {
+		t.Fatalf("after duplicate, activities count = %d", dbCount)
+	}
+}

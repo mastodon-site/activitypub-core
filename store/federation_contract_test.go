@@ -112,14 +112,17 @@ func TestIntegration_EnsureLocalActor_migratesLegacyActorURL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var gotURL, gotOutbox, gotPem string
-	err = pool.QueryRow(ctx, `SELECT actor_url, outbox_url, public_key_pem FROM actors WHERE id = $1`, id).
-		Scan(&gotURL, &gotOutbox, &gotPem)
+	var gotURL, gotInbox, gotOutbox, gotPem string
+	err = pool.QueryRow(ctx, `SELECT actor_url, inbox_url, outbox_url, public_key_pem FROM actors WHERE id = $1`, id).
+		Scan(&gotURL, &gotInbox, &gotOutbox, &gotPem)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := cfg.LocalActorProfileURL("admin"); gotURL != want {
 		t.Fatalf("actor_url got %q want %q", gotURL, want)
+	}
+	if want := cfg.LocalActorInboxURL("admin"); gotInbox != want {
+		t.Fatalf("inbox_url got %q want %q", gotInbox, want)
 	}
 	if want := cfg.LocalActorOutboxURL("admin"); gotOutbox != want {
 		t.Fatalf("outbox_url got %q want %q", gotOutbox, want)
