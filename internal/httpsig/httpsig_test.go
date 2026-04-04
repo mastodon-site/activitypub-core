@@ -32,6 +32,35 @@ func TestSignAndVerify_roundTrip(t *testing.T) {
 	}
 }
 
+func TestSignPost_preservesPresetContentType(t *testing.T) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{}`)
+	u, err := url.Parse("https://example.com/inbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, u.String(), bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.URL = u
+	req.Host = u.Host
+	ct := `application/ld+json; profile="https://www.w3.org/ns/activitystreams"`
+	req.Header.Set("Content-Type", ct)
+	if err := SignPost(req, body, "https://origin.test/users/a#main-key", priv); err != nil {
+		t.Fatal(err)
+	}
+	if got := req.Header.Get("Content-Type"); got != ct {
+		t.Fatalf("content-type: got %q want %q", got, ct)
+	}
+	if err := VerifyRequest(req, body, &priv.PublicKey); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestVerifyRequest_rejectsBadDigest(t *testing.T) {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

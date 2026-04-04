@@ -20,7 +20,13 @@ type Config struct {
 	QueueBackend string
 
 	PublicBaseURL string
+	// LocalUsername is the first entry in LocalUsernames (backward compatible default signing user).
 	LocalUsername string
+	// LocalUsernames lists every actor identity on this instance (AP_LOCAL_USERNAMES comma-separated, else AP_LOCAL_USERNAME).
+	LocalUsernames []string
+
+	// FollowAutoAccept enqueues Accept for inbound Follow activities (AP_FOLLOW_AUTO_ACCEPT, default true).
+	FollowAutoAccept bool
 
 	// ActorPrivateKeyPath is a PEM file (PKCS#1 or PKCS#8 RSA private key) for the local actor.
 	// If set, AP_ACTOR_PUBLIC_KEY_PATH may point to a PKIX public PEM; otherwise the public key is derived.
@@ -29,6 +35,9 @@ type Config struct {
 
 	// InboxMaxBody is the max bytes read for POST /inbox (HTTP Signature + activity body).
 	InboxMaxBody int
+
+	// OutboxPostSecret, if set, enables POST /outbox/{user} with Authorization: Bearer <secret>.
+	OutboxPostSecret string
 
 	BlobBackend    string
 	BlobFSRoot     string
@@ -49,10 +58,11 @@ func Load() (*Config, error) {
 		RedisURL:            os.Getenv("AP_REDIS_URL"),
 		QueueBackend:        strings.ToLower(getenv("AP_QUEUE_BACKEND", "sql")),
 		PublicBaseURL:       strings.TrimRight(os.Getenv("AP_PUBLIC_BASE_URL"), "/"),
-		LocalUsername:       getenv("AP_LOCAL_USERNAME", "admin"),
+		FollowAutoAccept:    true,
 		ActorPrivateKeyPath: os.Getenv("AP_ACTOR_PRIVATE_KEY_PATH"),
 		ActorPublicKeyPath:  os.Getenv("AP_ACTOR_PUBLIC_KEY_PATH"),
 		InboxMaxBody:        getenvInt("AP_INBOX_MAX_BODY_BYTES", 1<<20),
+		OutboxPostSecret:    os.Getenv("AP_OUTBOX_POST_SECRET"),
 		BlobBackend:         strings.ToLower(getenv("AP_BLOB_BACKEND", "filesystem")),
 		BlobFSRoot:          getenv("AP_BLOB_FS_ROOT", "./blobdata"),
 		BlobS3Bucket:        os.Getenv("AP_BLOB_S3_BUCKET"),
@@ -72,7 +82,67 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("AP_PUBLIC_BASE_URL: %w", err)
 		}
 	}
+
+	if v := strings.TrimSpace(os.Getenv("AP_LOCAL_USERNAMES")); v != "" {
+		for _, part := range strings.Split(v, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				c.LocalUsernames = append(c.LocalUsernames, part)
+			}
+		}
+	}
+	if len(c.LocalUsernames) == 0 {
+		c.LocalUsernames = []string{getenv("AP_LOCAL_USERNAME", "admin")}
+	}
+	c.LocalUsername = c.LocalUsernames[0]
+
+	if v := strings.ToLower(strings.TrimSpace(os.Getenv("AP_FOLLOW_AUTO_ACCEPT"))); v == "0" || v == "false" || v == "no" {
+		c.FollowAutoAccept = false
+	}
+
 	return c, nil
+}
+
+// IsLocalUsername reports whether name is one of this server's actor accounts.
+func (c *Config) IsLocalUsername(name string) bool {
+	for _, u := range c.LocalUsernames {
+		if u == name {
+			return true
+		}
+	}
+	// Tests and minimal configs may set only LocalUsername (Load() always fills LocalUsernames).
+	if len(c.LocalUsernames) == 0 && c.LocalUsername != "" && c.LocalUsername == name {
+		return true
+	}
+	return false
+}
+
+// LocalActorProfileURL returns /users/{username} IRI for a local account.
+func (c *Config) LocalActorProfileURL(username string) string {
+	root := strings.TrimRight(c.PublicBaseURL, "/")
+	return root + "/users/" + url.PathEscape(username)
+}
+
+// LocalSharedInboxURL returns the shared inbox IRI for this instance.
+func (c *Config) LocalSharedInboxURL() string {
+	return strings.TrimRight(c.PublicBaseURL, "/") + "/inbox"
+}
+
+// LocalUsernameForActorURL returns the local username if actorURL is one of our profiles.
+func (c *Config) LocalUsernameForActorURL(actorURL string) (string, bool) {
+	want := strings.TrimRight(strings.TrimSpace(actorURL), "/")
+	for _, u := range c.LocalUsernames {
+		if strings.TrimRight(c.LocalActorProfileURL(u), "/") == want {
+			return u, true
+		}
+	}
+	if len(c.LocalUsernames) == 0 && c.LocalUsername != "" {
+		u := c.LocalUsername
+		if strings.TrimRight(c.LocalActorProfileURL(u), "/") == want {
+			return u, true
+		}
+	}
+	return "", false
 }
 
 func getenv(k, def string) string {

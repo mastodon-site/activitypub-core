@@ -11,8 +11,9 @@ import (
 type Type string
 
 const (
-	TypeNoop            Type = "noop"
-	TypeDeliverActivity Type = "deliver_activity"
+	TypeNoop                 Type = "noop"
+	TypeDeliverActivity      Type = "deliver_activity"
+	TypeProcessInboxActivity Type = "process_inbox_activity"
 )
 
 // Job is a unit of asynchronous work.

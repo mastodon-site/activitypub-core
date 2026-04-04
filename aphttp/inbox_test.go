@@ -50,13 +50,20 @@ func TestSharedInbox_acceptsSignedActivity(t *testing.T) {
 	defer actorSrv.Close()
 	keyID := actorSrv.URL + "/users/remote#main-key"
 
-	h, err := New(&config.Config{InboxMaxBody: 65536})
+	h, err := New(&config.Config{InboxMaxBody: 65536}, Deps{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	h.fetchClient = actorSrv.Client()
 
-	body := []byte(`{"type":"Create","id":"https://sender.test/o/1"}`)
+	body, err := json.Marshal(map[string]any{
+		"type":  "Create",
+		"id":    "https://sender.test/o/1",
+		"actor": actorSrv.URL + "/users/remote",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	inboxURL := "https://destination.test/inbox"
 	req, err := httpsig.NewSignedPost(inboxURL, body, keyID, priv)
 	if err != nil {
@@ -71,7 +78,7 @@ func TestSharedInbox_acceptsSignedActivity(t *testing.T) {
 }
 
 func TestSharedInbox_rejectsMissingSignature(t *testing.T) {
-	h, err := New(&config.Config{})
+	h, err := New(&config.Config{}, Deps{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +92,7 @@ func TestSharedInbox_rejectsMissingSignature(t *testing.T) {
 }
 
 func TestSharedInbox_rejectsWrongContentType(t *testing.T) {
-	h, err := New(&config.Config{})
+	h, err := New(&config.Config{}, Deps{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +106,7 @@ func TestSharedInbox_rejectsWrongContentType(t *testing.T) {
 }
 
 func TestSharedInbox_rejectsOversizedBody(t *testing.T) {
-	h, err := New(&config.Config{InboxMaxBody: 8})
+	h, err := New(&config.Config{InboxMaxBody: 8}, Deps{})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -15,7 +15,16 @@ import (
 	"github.com/mastodon-site/activitypub-core/internal/config"
 	"github.com/mastodon-site/activitypub-core/internal/fetch"
 	"github.com/mastodon-site/activitypub-core/internal/httpsig"
+	"github.com/mastodon-site/activitypub-core/queue"
+	"github.com/mastodon-site/activitypub-core/queue/sqlqueue"
+	"github.com/mastodon-site/activitypub-core/store"
 )
+
+// Deps wires optional persistence and the job backend (both required for durable inbox handling).
+type Deps struct {
+	Store *store.Postgres
+	Queue queue.Backend
+}
 
 // Handler bundles AP HTTP handlers for mounting on the API mux.
 type Handler struct {
@@ -24,13 +33,19 @@ type Handler struct {
 	actorPublicKeyPEM string
 	fetchClient       *http.Client
 	inboxMaxBody      int
+	st                *store.Postgres
+	q                 queue.Backend
+	localActorIDs     map[string]int64 // username -> actors.id
 }
 
 // New creates AP HTTP handlers. cfg.PublicBaseURL must be set for meaningful responses.
 // If cfg sets actor key paths, the PEM for the actor document is loaded at startup.
-func New(cfg *config.Config) (*Handler, error) {
+// When deps.Store is set, each configured local username is upserted into actors and localActorIDs is populated.
+func New(cfg *config.Config, deps Deps) (*Handler, error) {
 	h := &Handler{
 		cfg: cfg,
+		st:  deps.Store,
+		q:   deps.Queue,
 		fetchClient: &http.Client{
 			Timeout: 30 * time.Second,
 			Transport: &http.Transport{
@@ -39,14 +54,27 @@ func New(cfg *config.Config) (*Handler, error) {
 		},
 		inboxMaxBody: cfg.InboxMaxBody,
 	}
-	if cfg.ActorPrivateKeyPath == "" {
-		return h, nil
+	if cfg.ActorPrivateKeyPath != "" {
+		pub, err := actorkey.ActorPublicKeyPEMForConfig(cfg)
+		if err != nil {
+			return nil, err
+		}
+		h.actorPublicKeyPEM = pub
 	}
-	pub, err := actorkey.ActorPublicKeyPEMForConfig(cfg)
-	if err != nil {
-		return nil, err
+	if h.st != nil {
+		h.localActorIDs = make(map[string]int64)
+		localNames := cfg.LocalUsernames
+		if len(localNames) == 0 && strings.TrimSpace(cfg.LocalUsername) != "" {
+			localNames = []string{cfg.LocalUsername}
+		}
+		for _, uname := range localNames {
+			id, err := store.EnsureLocalActor(context.Background(), h.st.Pool, cfg, uname, h.actorPublicKeyPEM)
+			if err != nil {
+				return nil, err
+			}
+			h.localActorIDs[uname] = id
+		}
 	}
-	h.actorPublicKeyPEM = pub
 	return h, nil
 }
 
@@ -81,7 +109,7 @@ func (h *Handler) WebFinger(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "user not found", http.StatusNotFound)
 		return
 	}
-	if user != h.cfg.LocalUsername {
+	if !h.cfg.IsLocalUsername(user) {
 		http.Error(w, "user not found", http.StatusNotFound)
 		return
 	}
@@ -119,7 +147,7 @@ func (h *Handler) GetActor(w http.ResponseWriter, r *http.Request) {
 	}
 	username := strings.TrimPrefix(r.URL.Path, "/users/")
 	username = strings.Trim(username, "/")
-	if username != h.cfg.LocalUsername {
+	if !h.cfg.IsLocalUsername(username) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
@@ -206,16 +234,229 @@ func (h *Handler) SharedInbox(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid digest or HTTP signature", http.StatusUnauthorized)
 		return
 	}
+
+	rawFields := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(body, &rawFields); err != nil {
+		http.Error(w, "invalid activity json", http.StatusBadRequest)
+		return
+	}
+	activityID, err := jsonStringField(rawFields, "id")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	activityType, err := activityTypeString(rawFields)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	actorIRI, err := actorIRIFromActivity(rawFields)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !signingActorMatchesKeyID(keyID, actorIRI) {
+		http.Error(w, "signature actor does not match activity actor", http.StatusUnauthorized)
+		return
+	}
+
+	if h.st == nil || h.q == nil {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
+	signerPEM, err := actorkey.PublicKeyPEMFromRSA(pub)
+	if err != nil {
+		http.Error(w, "internal key encoding", http.StatusInternalServerError)
+		return
+	}
+	remoteID, err := store.EnsureRemoteActor(r.Context(), h.st.Pool, actorIRI, signerPEM)
+	if err != nil {
+		http.Error(w, "persist actor", http.StatusInternalServerError)
+		return
+	}
+
+	if sqlQ, ok := h.q.(*sqlqueue.SQL); ok {
+		tx, err := h.st.Pool.Begin(r.Context())
+		if err != nil {
+			http.Error(w, "tx begin", http.StatusInternalServerError)
+			return
+		}
+		defer tx.Rollback(r.Context())
+
+		inserted, actDBID, err := store.InsertInboundActivity(r.Context(), tx, remoteID, activityID, activityType, body)
+		if err != nil {
+			http.Error(w, "persist activity", http.StatusInternalServerError)
+			return
+		}
+		if !inserted {
+			if err := tx.Commit(r.Context()); err != nil {
+				http.Error(w, "tx commit", http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		payload, err := json.Marshal(map[string]int64{"activityDbId": actDBID})
+		if err != nil {
+			http.Error(w, "internal", http.StatusInternalServerError)
+			return
+		}
+		job := queue.Job{
+			Type:           queue.TypeProcessInboxActivity,
+			Payload:        payload,
+			IdempotencyKey: activityID,
+		}
+		if err := sqlQ.EnqueueTx(r.Context(), tx, job); err != nil {
+			http.Error(w, "enqueue job", http.StatusInternalServerError)
+			return
+		}
+		if err := tx.Commit(r.Context()); err != nil {
+			http.Error(w, "tx commit", http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
+	inserted, actDBID, err := store.InsertInboundActivity(r.Context(), h.st.Pool, remoteID, activityID, activityType, body)
+	if err != nil {
+		http.Error(w, "persist activity", http.StatusInternalServerError)
+		return
+	}
+	if !inserted {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	payload, err := json.Marshal(map[string]int64{"activityDbId": actDBID})
+	if err != nil {
+		http.Error(w, "internal", http.StatusInternalServerError)
+		return
+	}
+	job := queue.Job{
+		Type:           queue.TypeProcessInboxActivity,
+		Payload:        payload,
+		IdempotencyKey: activityID,
+	}
+	if err := h.q.Enqueue(r.Context(), job); err != nil {
+		http.Error(w, "enqueue job", http.StatusInternalServerError)
+		return
+	}
 	w.WriteHeader(http.StatusAccepted)
 }
 
 func isActivityJSONContentType(ct string) bool {
-	ct = strings.ToLower(strings.TrimSpace(ct))
+	ct = strings.TrimSpace(ct)
 	if ct == "" {
 		return false
 	}
-	return strings.Contains(ct, "application/activity+json") ||
-		strings.Contains(ct, "application/ld+json")
+	base, _, _ := strings.Cut(ct, ";")
+	base = strings.ToLower(strings.TrimSpace(base))
+	return base == "application/activity+json" || base == "application/ld+json"
+}
+
+// GetOutbox returns an OrderedCollection of outbound activity IRIs for the local user (newest first).
+func (h *Handler) GetOutbox(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.cfg.PublicBaseURL == "" || h.st == nil || len(h.localActorIDs) == 0 {
+		http.Error(w, "server not configured", http.StatusServiceUnavailable)
+		return
+	}
+	username := r.PathValue("username")
+	if username == "" || !h.cfg.IsLocalUsername(username) {
+		http.NotFound(w, r)
+		return
+	}
+	actorID, ok := h.localActorIDs[username]
+	if !ok || actorID == 0 {
+		http.Error(w, "server not configured", http.StatusServiceUnavailable)
+		return
+	}
+	total, items, err := store.OutboxPage(r.Context(), h.st.Pool, actorID, 50)
+	if err != nil {
+		http.Error(w, "outbox", http.StatusInternalServerError)
+		return
+	}
+	base := strings.TrimRight(h.cfg.PublicBaseURL, "/")
+	collID := base + "/outbox/" + url.PathEscape(username)
+	doc := map[string]any{
+		"@context":     "https://www.w3.org/ns/activitystreams",
+		"id":           collID,
+		"type":         "OrderedCollection",
+		"totalItems":   total,
+		"orderedItems": items,
+	}
+	accept := r.Header.Get("Accept")
+	if strings.Contains(accept, "application/activity+json") || strings.Contains(accept, "application/ld+json") {
+		w.Header().Set("Content-Type", "application/activity+json; charset=utf-8")
+	} else {
+		w.Header().Set("Content-Type", "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"; charset=utf-8")
+	}
+	_ = json.NewEncoder(w).Encode(doc)
+}
+
+func jsonStringField(m map[string]json.RawMessage, key string) (string, error) {
+	raw, ok := m[key]
+	if !ok {
+		return "", fmt.Errorf("missing %s", key)
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil || strings.TrimSpace(s) == "" {
+		return "", fmt.Errorf("invalid or empty %s", key)
+	}
+	return s, nil
+}
+
+func activityTypeString(m map[string]json.RawMessage) (string, error) {
+	raw, ok := m["type"]
+	if !ok {
+		return "", fmt.Errorf("missing type")
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil && s != "" {
+		return s, nil
+	}
+	var arr []any
+	if err := json.Unmarshal(raw, &arr); err == nil && len(arr) > 0 {
+		if s, ok := arr[0].(string); ok && s != "" {
+			return s, nil
+		}
+	}
+	return "", fmt.Errorf("invalid type field")
+}
+
+func actorIRIFromActivity(m map[string]json.RawMessage) (string, error) {
+	raw, ok := m["actor"]
+	if !ok {
+		return "", fmt.Errorf("missing actor")
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil && s != "" {
+		return s, nil
+	}
+	var obj struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &obj); err == nil && obj.ID != "" {
+		return obj.ID, nil
+	}
+	return "", fmt.Errorf("actor must be an id string or an object with id")
+}
+
+func signingActorMatchesKeyID(keyID, actorIRI string) bool {
+	k, err := url.Parse(keyID)
+	if err != nil {
+		return false
+	}
+	a, err := url.Parse(actorIRI)
+	if err != nil {
+		return false
+	}
+	k.Fragment, a.Fragment = "", ""
+	return strings.TrimRight(k.String(), "/") == strings.TrimRight(a.String(), "/")
 }
 
 // Mount registers routes on mux. basePath is typically empty (Host root).
@@ -228,6 +469,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 		}
 		h.GetActor(w, r)
 	})
+	mux.HandleFunc("GET /outbox/{username}", h.GetOutbox)
+	mux.HandleFunc("POST /outbox/{username}", h.PostOutbox)
 	mux.HandleFunc("POST /inbox", h.SharedInbox)
 }
 

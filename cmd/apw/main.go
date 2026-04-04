@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -26,6 +27,7 @@ import (
 	"github.com/mastodon-site/activitypub-core/internal/actorkey"
 	"github.com/mastodon-site/activitypub-core/internal/config"
 	"github.com/mastodon-site/activitypub-core/internal/httpsig"
+	"github.com/mastodon-site/activitypub-core/internal/inboxproc"
 	"github.com/mastodon-site/activitypub-core/migrate"
 	"github.com/mastodon-site/activitypub-core/queue"
 	"github.com/mastodon-site/activitypub-core/queue/redisqueue"
@@ -55,14 +57,22 @@ func main() {
 		log.Fatal("AP_DATABASE_URL required for sql queue backend")
 	}
 
-	var q queue.Backend
-	switch cfg.QueueBackend {
-	case "sql":
+	var pgPool *pgxpool.Pool
+	if cfg.DatabaseURL != "" {
 		st, err := postgres.NewPool(ctx, cfg.DatabaseURL)
 		if err != nil {
 			log.Fatalf("postgres: %v", err)
 		}
-		defer st.Pool.Close()
+		pgPool = st.Pool
+		defer pgPool.Close()
+	}
+
+	var q queue.Backend
+	switch cfg.QueueBackend {
+	case "sql":
+		if pgPool == nil {
+			log.Fatal("AP_DATABASE_URL required for sql queue backend")
+		}
 		migrationsDir := filepath.Join(".", "db", "migrations")
 		if mp := os.Getenv("AP_MIGRATIONS_DIR"); mp != "" {
 			migrationsDir = mp
@@ -74,7 +84,7 @@ func main() {
 		if err := migrate.Up(cfg.DatabaseURL, abs); err != nil {
 			log.Fatalf("migrate: %v", err)
 		}
-		q = sqlqueue.New(st.Pool)
+		q = sqlqueue.New(pgPool)
 	case "redis":
 		if cfg.RedisURL == "" {
 			log.Fatal("AP_REDIS_URL required for redis queue backend")
@@ -108,15 +118,16 @@ func main() {
 		wg.Add(1)
 		go func(id int) {
 			defer wg.Done()
-			workerLoop(ctx, id, q, cfg, cfg.WorkerPollInterval)
+			workerLoop(ctx, id, q, cfg, pgPool, cfg.WorkerPollInterval)
 		}(i)
 	}
 	wg.Wait()
 	log.Println("apw shut down")
 }
 
-func workerLoop(ctx context.Context, id int, q queue.Backend, cfg *config.Config, poll time.Duration) {
+func workerLoop(ctx context.Context, id int, q queue.Backend, cfg *config.Config, pool *pgxpool.Pool, poll time.Duration) {
 	log.Printf("worker %d started", id)
+	hc := &http.Client{Timeout: 30 * time.Second}
 	for {
 		select {
 		case <-ctx.Done():
@@ -133,7 +144,7 @@ func workerLoop(ctx context.Context, id int, q queue.Backend, cfg *config.Config
 			time.Sleep(poll)
 			continue
 		}
-		if err := processJob(ctx, cfg, lease); err != nil {
+		if err := processJob(ctx, cfg, pool, q, lease, hc); err != nil {
 			jobsProcessed.WithLabelValues(string(lease.Type), "error").Inc()
 			log.Printf("worker %d job %d failed: %v", id, lease.ID, err)
 			_ = q.Nack(ctx, lease.ID, true)
@@ -146,12 +157,26 @@ func workerLoop(ctx context.Context, id int, q queue.Backend, cfg *config.Config
 	}
 }
 
-func processJob(ctx context.Context, cfg *config.Config, lease *queue.Lease) error {
+func processJob(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, q queue.Backend, lease *queue.Lease, httpClient *http.Client) error {
 	switch lease.Type {
 	case queue.TypeNoop:
 		return nil
 	case queue.TypeDeliverActivity:
 		return deliverActivity(ctx, cfg, lease.Payload)
+	case queue.TypeProcessInboxActivity:
+		if pool == nil {
+			return fmt.Errorf("process_inbox_activity requires AP_DATABASE_URL (postgres pool)")
+		}
+		var payload struct {
+			ActivityDBID int64 `json:"activityDbId"`
+		}
+		if err := json.Unmarshal(lease.Payload, &payload); err != nil {
+			return fmt.Errorf("process_inbox_activity payload: %w", err)
+		}
+		if payload.ActivityDBID < 1 {
+			return fmt.Errorf("process_inbox_activity: activityDbId required")
+		}
+		return inboxproc.ProcessInboxActivity(ctx, pool, q, cfg, httpClient, payload.ActivityDBID)
 	default:
 		log.Printf("unknown job type %q — acknowledging", lease.Type)
 		return nil
@@ -159,8 +184,20 @@ func processJob(ctx context.Context, cfg *config.Config, lease *queue.Lease) err
 }
 
 type deliverPayload struct {
-	InboxURL string          `json:"inboxUrl"`
-	Body     json.RawMessage `json:"body"`
+	InboxURL        string          `json:"inboxUrl"`
+	Body            json.RawMessage `json:"body"`
+	LocalUsername   string          `json:"localUsername,omitempty"`
+	SigningUsername string          `json:"signingUsername,omitempty"`
+}
+
+func signingUsernameForDelivery(p deliverPayload, cfg *config.Config) string {
+	if strings.TrimSpace(p.SigningUsername) != "" {
+		return strings.TrimSpace(p.SigningUsername)
+	}
+	if strings.TrimSpace(p.LocalUsername) != "" {
+		return strings.TrimSpace(p.LocalUsername)
+	}
+	return cfg.LocalUsername
 }
 
 func deliverActivity(ctx context.Context, cfg *config.Config, raw json.RawMessage) error {
@@ -181,7 +218,11 @@ func deliverActivity(ctx context.Context, cfg *config.Config, raw json.RawMessag
 	if p.InboxURL == "" || len(p.Body) == 0 {
 		return fmt.Errorf("deliver_activity: inboxUrl and body required")
 	}
-	keyID := strings.TrimRight(cfg.PublicBaseURL, "/") + "/users/" + url.PathEscape(cfg.LocalUsername) + "#main-key"
+	user := signingUsernameForDelivery(p, cfg)
+	if user == "" || !cfg.IsLocalUsername(user) {
+		return fmt.Errorf("deliver_activity: signing user %q is not a configured local account", user)
+	}
+	keyID := strings.TrimRight(cfg.PublicBaseURL, "/") + "/users/" + url.PathEscape(user) + "#main-key"
 	req, err := httpsig.NewSignedPost(p.InboxURL, p.Body, keyID, priv)
 	if err != nil {
 		return err

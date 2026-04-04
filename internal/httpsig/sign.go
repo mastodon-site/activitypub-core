@@ -28,7 +28,9 @@ func SignPost(req *http.Request, body []byte, keyID string, priv *rsa.PrivateKey
 		return fmt.Errorf("request URL must include host for signing")
 	}
 	req.Header.Set("Host", u.Host)
-	req.Header.Set("Content-Type", "application/activity+json")
+	if strings.TrimSpace(req.Header.Get("Content-Type")) == "" {
+		req.Header.Set("Content-Type", "application/activity+json")
+	}
 	req.Header.Set("Digest", DigestHeader(body))
 	req.Header.Set("Date", time.Now().UTC().Format(http.TimeFormat))
 	signing, err := BuildSigningString(req, HeaderOrder)
