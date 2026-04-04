@@ -42,7 +42,7 @@ func UpsertLocalActor(ctx context.Context, pool dbQueryRow, cfg *config.Config, 
 	}
 	root := strings.TrimRight(cfg.PublicBaseURL, "/")
 	actorURL := root + "/@" + url.PathEscape(username)
-	inboxURL := root + "/inbox"
+	inboxURL := cfg.LocalActorInboxURL(username)
 	outboxURL := root + "/@" + url.PathEscape(username) + "/outbox"
 	pem := publicKeyPEM
 	if strings.TrimSpace(pem) == "" {

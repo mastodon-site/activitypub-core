@@ -12,7 +12,8 @@ import (
 // localActorJSON builds ActivityPub Person JSON for a local username (shared by HTTP handlers).
 func localActorJSON(cfg *config.Config, username, actorPublicKeyPEM string) map[string]any {
 	profile := cfg.LocalActorProfileURL(username)
-	inbox := cfg.LocalSharedInboxURL()
+	inbox := cfg.LocalActorInboxURL(username)
+	sharedInbox := cfg.LocalSharedInboxURL()
 	outbox := cfg.LocalActorOutboxURL(username)
 	followers := cfg.LocalActorFollowersURL(username)
 	following := cfg.LocalActorFollowingURL(username)
@@ -34,7 +35,7 @@ func localActorJSON(cfg *config.Config, username, actorPublicKeyPEM string) map[
 		"followers":         followers,
 		"following":         following,
 		"endpoints": map[string]any{
-			"sharedInbox": inbox,
+			"sharedInbox": sharedInbox,
 		},
 		"publicKey": map[string]any{
 			"id":           keyID,

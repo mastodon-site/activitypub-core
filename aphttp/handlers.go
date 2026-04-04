@@ -358,6 +358,26 @@ func (h *Handler) SharedInbox(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
+// LegacyUsersPathInbox serves POST /users/{username}/inbox for local actors (Mastodon-style).
+// Same behavior as SharedInbox; the request-target in HTTP Signatures matches this path when remotes use it.
+func (h *Handler) LegacyUsersPathInbox(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	raw := r.PathValue("username")
+	uname, err := url.PathUnescape(raw)
+	if err != nil || strings.TrimSpace(uname) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if !h.IsLocalActor(uname) {
+		http.NotFound(w, r)
+		return
+	}
+	h.SharedInbox(w, r)
+}
+
 func isActivityJSONContentType(ct string) bool {
 	ct = strings.TrimSpace(ct)
 	if ct == "" {
@@ -481,6 +501,9 @@ func (h *Handler) GetRoot(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Mount(mux *http.ServeMux) {
 	// GET / is handled via GetActivityOrObject → GetRoot (cannot register both GET / and GET /{path...} on Go 1.22+ ServeMux).
 	mux.HandleFunc("GET /.well-known/webfinger", h.WebFinger)
+	mux.HandleFunc("GET /.well-known/host-meta", h.HostMeta)
+	mux.HandleFunc("GET /.well-known/nodeinfo", h.NodeInfoDiscovery)
+	mux.HandleFunc("GET /nodeinfo/2.0", h.NodeInfo20)
 	mux.HandleFunc("GET /.well-known/actor", h.GetInstanceActor)
 	mux.HandleFunc("GET /actor", h.RedirectInstanceActorAlias)
 
@@ -488,6 +511,8 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("GET /media/{key...}", h.GetMedia)
 
 	mux.HandleFunc("POST /inbox", h.SharedInbox)
+	// Mastodon-style per-actor inbox path (same handler as shared inbox; HTTP Signatures use this request URL).
+	mux.HandleFunc("POST /users/{username}/inbox", h.LegacyUsersPathInbox)
 
 	// Resolve any path to persisted activity_id / object_url (local actors only). Must stay last among GET routes in this mux.
 	mux.HandleFunc("GET /{path...}", h.GetActivityOrObject)

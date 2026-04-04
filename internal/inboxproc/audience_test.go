@@ -49,6 +49,44 @@ func TestActivityShouldApplySideEffects_sharedInboxInCc(t *testing.T) {
 	}
 }
 
+func TestActivityShouldApplySideEffects_perActorInboxInTo(t *testing.T) {
+	cfg := &config.Config{PublicBaseURL: "https://i.test", LocalUsername: "alice", LocalUsernames: []string{"alice", "bob"}}
+	fields := map[string]json.RawMessage{
+		"to": mustRawStr(t, `"`+cfg.LocalActorInboxURL("bob")+`"`),
+	}
+	if !activityShouldApplySideEffects(cfg, fields) {
+		t.Fatal("per-actor inbox in to should apply for a configured local user")
+	}
+}
+
+func TestActivityShouldApplySideEffects_perActorInbox_trailingSlash(t *testing.T) {
+	cfg := &config.Config{PublicBaseURL: "https://i.test", LocalUsername: "alice", LocalUsernames: []string{"alice"}}
+	inbox := cfg.LocalActorInboxURL("alice") + "/"
+	fields := map[string]json.RawMessage{
+		"bto": mustRawStr(t, `"`+inbox+`"`),
+	}
+	if !activityShouldApplySideEffects(cfg, fields) {
+		t.Fatal("trailing-slash inbox IRI should match")
+	}
+}
+
+func TestActivityShouldApplySideEffects_perActorInbox_nonLocalUserDoesNotApply(t *testing.T) {
+	cfg := &config.Config{PublicBaseURL: "https://i.test", LocalUsername: "alice", LocalUsernames: []string{"alice"}}
+	fields := map[string]json.RawMessage{
+		"to": mustRawStr(t, `"`+cfg.LocalActorInboxURL("stranger")+`"`),
+	}
+	if activityShouldApplySideEffects(cfg, fields) {
+		t.Fatal("inbox URL shape alone should not apply when user is not local")
+	}
+}
+
+func TestActivityShouldApplySideEffects_sharedVsPerActorInboxDifferent(t *testing.T) {
+	cfg := &config.Config{PublicBaseURL: "https://i.test", LocalUsername: "alice", LocalUsernames: []string{"alice"}}
+	if cfg.LocalSharedInboxURL() == cfg.LocalActorInboxURL("alice") {
+		t.Fatal("fixture expects distinct shared and per-actor inbox IRIs")
+	}
+}
+
 func TestActivityShouldApplySideEffects_asPublicOnly(t *testing.T) {
 	cfg := &config.Config{PublicBaseURL: "https://i.test", LocalUsername: "a", LocalUsernames: []string{"a"}}
 	for _, pub := range []string{
