@@ -58,6 +58,15 @@ docker compose up --build
 
 Override **`AP_PUBLIC_BASE_URL`** (and optionally **`AP_LOCAL_USERNAMES`**) when invoking compose, e.g. `AP_PUBLIC_BASE_URL=https://your-host.example docker compose up`.
 
+### Publishing container images (maintainers)
+
+Post-merge releases follow the same model as [musicsocial](https://github.com/mastodon-site/musicsocial): [`.github/workflows/ci.yml`](.github/workflows/ci.yml) (**CI/CD Pipeline**).
+
+1. Open a PR to **`main`** with exactly one semver label: **`patch`**, **`minor`**, or **`major`** (same as PR checks).
+2. When the PR is **merged**, the workflow bumps the version from the previous git tag, **builds and pushes** **`ghcr.io/<owner>/activitypub-core-apd`** and **`activitypub-core-apw`** to GHCR (semver + `latest` when applicable), then **creates the GitHub Release** via `softprops/action-gh-release`.
+3. **`workflow_dispatch`** on that workflow can rebuild/push for debugging (version comes from `git describe`).
+4. **`GITHUB_TOKEN`** must be allowed **`packages: write`** and **`contents: write`** (set on the workflow).
+
 ### `apw`
 
 When **`AP_WORKER_METRICS_LISTEN`** is non-empty, a small HTTP server is started on that address:
