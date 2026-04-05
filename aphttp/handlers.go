@@ -27,6 +27,10 @@ type Deps struct {
 	Store *store.Postgres
 	Queue queue.Backend
 	Blobs blobs.Store
+	// FetchPolicy, if non-nil, overrides PolicyFromConfig(cfg) for outbound federation fetches.
+	FetchPolicy *fetch.Policy
+	// FetchClient, if non-nil, overrides the HTTP client built from FetchPolicy (integration tests).
+	FetchClient *http.Client
 }
 
 // Handler bundles AP HTTP handlers for mounting on the API mux.
@@ -49,12 +53,19 @@ type Handler struct {
 // When deps.Store is set, each configured local username is upserted into actors and localActorIDs is populated.
 func New(cfg *config.Config, deps Deps) (*Handler, error) {
 	pol := fetch.PolicyFromConfig(cfg)
+	if deps.FetchPolicy != nil {
+		pol = deps.FetchPolicy
+	}
+	client := fetch.NewHTTPClientForPolicy(pol, 30*time.Second)
+	if deps.FetchClient != nil {
+		client = deps.FetchClient
+	}
 	h := &Handler{
 		cfg:          cfg,
 		st:           deps.Store,
 		q:            deps.Queue,
 		blobs:        deps.Blobs,
-		fetchClient:  fetch.NewHTTPClientForPolicy(pol, 30*time.Second),
+		fetchClient:  client,
 		fetchPolicy:  pol,
 		inboxMaxBody: cfg.InboxMaxBody,
 	}

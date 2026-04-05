@@ -1,10 +1,12 @@
 package mastodonapi
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -18,6 +20,7 @@ import (
 
 	"github.com/mastodon-site/activitypub-core/aphttp"
 	"github.com/mastodon-site/activitypub-core/internal/config"
+	"github.com/mastodon-site/activitypub-core/internal/fetch"
 	"github.com/mastodon-site/activitypub-core/migrate"
 	"github.com/mastodon-site/activitypub-core/queue"
 	"github.com/mastodon-site/activitypub-core/store"
@@ -56,6 +59,34 @@ func findMigrationsDir(t *testing.T) string {
 	}
 	t.Fatal("could not find db/migrations")
 	return ""
+}
+
+// mastodonStubRoundTripper stubs HTTPS requests to local profile URLs on publicBaseURL so
+// PublishLocalActivityBytes can resolve actor inboxes without DNS (CI hosts like *.test do not resolve).
+type mastodonStubRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f mastodonStubRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func mastodonIntegrationStubFetchClient(publicBaseURL string) *http.Client {
+	base := strings.TrimRight(publicBaseURL, "/")
+	return &http.Client{Transport: mastodonStubRoundTripper(func(req *http.Request) (*http.Response, error) {
+		u := req.URL.String()
+		if strings.HasPrefix(u, base+"/@") || strings.HasPrefix(u, base+"/users/") {
+			inbox := base + "/inbox"
+			doc := map[string]any{"id": strings.TrimRight(u, "/"), "inbox": inbox}
+			b, err := json.Marshal(doc)
+			if err != nil {
+				return nil, err
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/activity+json"}},
+				Body:       io.NopCloser(bytes.NewReader(b)),
+				Request:    req,
+			}, nil
+		}
+		return http.DefaultTransport.RoundTrip(req)
+	})}
 }
 
 func truncateMastodonTestDB(t *testing.T, pool *pgxpool.Pool) {
@@ -578,7 +609,12 @@ func TestIntegration_MastodonUnfollow_removesFollowEdge(t *testing.T) {
 		LocalUsername:  "alice",
 		LocalUsernames: []string{"alice", "bob"},
 	}
-	h, err := aphttp.New(cfg, aphttp.Deps{Store: st, Queue: mastodonTestQueueNoop{}})
+	h, err := aphttp.New(cfg, aphttp.Deps{
+		Store:       st,
+		Queue:       mastodonTestQueueNoop{},
+		FetchPolicy: fetch.TestingPolicy(),
+		FetchClient: mastodonIntegrationStubFetchClient(cfg.PublicBaseURL),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

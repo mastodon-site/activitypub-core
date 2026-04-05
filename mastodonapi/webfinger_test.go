@@ -22,7 +22,6 @@ func TestNormalizeMastodonSearchQuery(t *testing.T) {
 }
 
 func TestPickActorHrefFromWebfingerLinks(t *testing.T) {
-	t.Parallel()
 	const actor = "https://fedi.example/users/a"
 	cases := []struct {
 		name    string
@@ -75,7 +74,6 @@ func TestPickActorHrefFromWebfingerLinks(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
 			got, err := pickActorHrefFromWebfingerLinks(tc.links)
 			if tc.wantErr {
 				if err == nil {
