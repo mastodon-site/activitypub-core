@@ -85,6 +85,30 @@ func TestContract_OAuthAuthorizationServerMetadata_JSON(t *testing.T) {
 			t.Fatalf("missing string %s in %v", k, doc)
 		}
 	}
+	raw, ok := doc["grant_types_supported"].([]any)
+	if !ok || len(raw) < 2 {
+		t.Fatalf("grant_types_supported: %#v", doc["grant_types_supported"])
+	}
+	var grants []string
+	for _, v := range raw {
+		s, ok := v.(string)
+		if !ok {
+			t.Fatal(doc["grant_types_supported"])
+		}
+		grants = append(grants, s)
+	}
+	if !containsStr(grants, "authorization_code") || !containsStr(grants, "client_credentials") {
+		t.Fatalf("expected Mastodon-compatible grant types: %v", grants)
+	}
+}
+
+func containsStr(slice []string, v string) bool {
+	for _, s := range slice {
+		if s == v {
+			return true
+		}
+	}
+	return false
 }
 
 func TestContract_CustomEmojis_emptyArray(t *testing.T) {

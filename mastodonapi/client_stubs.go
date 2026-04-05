@@ -64,7 +64,7 @@ func (s *Server) getOAuthAuthorizationServer(w http.ResponseWriter, r *http.Requ
 		"token_endpoint":                   base + "/oauth/token",
 		"response_types_supported":         []string{"code"},
 		"response_modes_supported":         []string{"query"},
-		"grant_types_supported":            []string{"authorization_code"},
+		"grant_types_supported":            []string{"authorization_code", "client_credentials"},
 		"code_challenge_methods_supported": []string{"S256", "plain"},
 		"token_endpoint_auth_methods_supported": []string{
 			"client_secret_post",
