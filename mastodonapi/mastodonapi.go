@@ -170,8 +170,8 @@ func (s *Server) getVerifyCredentials(w http.ResponseWriter, r *http.Request, ac
 }
 
 type statusCreateJSON struct {
-	Status           string `json:"status"`
-	Visibility       string `json:"visibility"`
+	Status         string `json:"status"`
+	Visibility     string `json:"visibility"`
 	QuotedStatusID *int64 `json:"quoted_status_id,omitempty"`
 }
 
