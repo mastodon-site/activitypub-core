@@ -97,13 +97,13 @@ func (s *Server) postFilters(w http.ResponseWriter, r *http.Request, _ int64) {
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 1<<20))
 	writeJSONObjectOK(w, map[string]any{
-		"id":          "0",
-		"title":       "",
-		"context":     []any{},
-		"expires_at":  nil,
+		"id":            "0",
+		"title":         "",
+		"context":       []any{},
+		"expires_at":    nil,
 		"filter_action": "warn",
-		"keywords":    []any{},
-		"statuses":    []any{},
+		"keywords":      []any{},
+		"statuses":      []any{},
 	})
 }
 

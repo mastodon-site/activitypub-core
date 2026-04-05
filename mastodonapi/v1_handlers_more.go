@@ -275,9 +275,3 @@ func (s *Server) deletePushSubscription(w http.ResponseWriter, r *http.Request, 
 	}
 	writeJSONObjectOK(w, map[string]any{})
 }
-
-</think>
-
-
-<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>
-StrReplace

@@ -32,7 +32,7 @@ func TestMastodonRoutes_publicAndUnauthorized(t *testing.T) {
 		check    func(t *testing.T, rec *httptest.ResponseRecorder)
 	}{
 		{
-			name: "oauth metadata",
+			name:   "oauth metadata",
 			method: http.MethodGet, path: "/.well-known/oauth-authorization-server", wantCode: http.StatusOK,
 			check: func(t *testing.T, rec *httptest.ResponseRecorder) {
 				var m map[string]any
