@@ -50,6 +50,7 @@ func Mount(mux *http.ServeMux, h *aphttp.Handler, pool *pgxpool.Pool) {
 	mux.HandleFunc("GET /api/v1/accounts/search", s.getAccountSearch)
 	mux.HandleFunc("POST /api/v1/accounts/{id}/follow", s.bearer(s.postAccountFollow))
 	mux.HandleFunc("GET /api/v1/timelines/home", s.bearer(s.getTimelineHome))
+	mux.HandleFunc("GET /api/v1/timelines/public", s.getTimelinePublic)
 
 	mux.HandleFunc("GET /oauth/authorize", s.getOAuthAuthorize)
 	mux.HandleFunc("POST /oauth/authorize", s.postOAuthAuthorize)
