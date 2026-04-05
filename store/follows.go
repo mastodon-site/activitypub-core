@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -51,6 +53,29 @@ func SetFollowStateByFollowActivityIDForFollower(ctx context.Context, q dbExec, 
 		WHERE follow_activity_id = $1 AND follower_actor_id = $3
 	`, followActivityID, state, followerActorID)
 	return err
+}
+
+type rowQuery interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+// LookupActiveFollowForUndo returns the original Follow activity id and followee actor URL when an active edge exists.
+// Active states are those Mastodon clients treat as "following" or awaiting remote accept.
+func LookupActiveFollowForUndo(ctx context.Context, q rowQuery, followerID, followeeID int64) (followActivityID, followeeActorURL string, ok bool, err error) {
+	err = q.QueryRow(ctx, `
+		SELECT f.follow_activity_id, trim(trailing '/' from fe.actor_url)
+		FROM follows f
+		JOIN actors fe ON fe.id = f.followee_actor_id
+		WHERE f.follower_actor_id = $1 AND f.followee_actor_id = $2
+		  AND f.state IN ('accepted', 'pending', 'pending_remote')
+	`, followerID, followeeID).Scan(&followActivityID, &followeeActorURL)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", "", false, nil
+		}
+		return "", "", false, err
+	}
+	return followActivityID, followeeActorURL, true, nil
 }
 
 // DeleteFollowByPair removes a follow relationship (unfollow / Undo).

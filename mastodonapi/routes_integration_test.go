@@ -19,6 +19,7 @@ import (
 	"github.com/mastodon-site/activitypub-core/aphttp"
 	"github.com/mastodon-site/activitypub-core/internal/config"
 	"github.com/mastodon-site/activitypub-core/migrate"
+	"github.com/mastodon-site/activitypub-core/queue"
 	"github.com/mastodon-site/activitypub-core/store"
 	"github.com/mastodon-site/activitypub-core/store/postgres"
 )
@@ -108,7 +109,7 @@ func TestIntegration_MastodonRoutes_withDatabase(t *testing.T) {
 	truncateMastodonTestDB(t, st.Pool)
 
 	cfg := &config.Config{PublicBaseURL: "https://routes-int.test", LocalUsername: "alice", LocalUsernames: []string{"alice"}}
-	h, err := aphttp.New(cfg, aphttp.Deps{Store: st})
+	h, err := aphttp.New(cfg, aphttp.Deps{Store: st, Queue: mastodonTestQueueNoop{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,6 +206,23 @@ func TestIntegration_MastodonRoutes_withDatabase(t *testing.T) {
 		var lists []any
 		if err := json.Unmarshal(rec.Body.Bytes(), &lists); err != nil || len(lists) != 0 {
 			t.Fatalf("body %s err %v", rec.Body.String(), err)
+		}
+	})
+
+	t.Run("search_v2_accounts_leading_at", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		q := "/api/v2/search?q=" + url.QueryEscape("@alice@routes-int.test") + "&type=accounts"
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, q, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%d %s", rec.Code, rec.Body.String())
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+			t.Fatal(err)
+		}
+		accts, ok := doc["accounts"].([]any)
+		if !ok || len(accts) < 1 {
+			t.Fatalf("accounts: %#v", doc["accounts"])
 		}
 	})
 
@@ -318,7 +336,7 @@ func TestIntegration_OAuthToken_flows(t *testing.T) {
 	truncateMastodonTestDB(t, st.Pool)
 
 	cfg := &config.Config{PublicBaseURL: "https://oauth-int.test", LocalUsername: "alice", LocalUsernames: []string{"alice"}}
-	h, err := aphttp.New(cfg, aphttp.Deps{Store: st})
+	h, err := aphttp.New(cfg, aphttp.Deps{Store: st, Queue: mastodonTestQueueNoop{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -541,3 +559,87 @@ func TestIntegration_OAuthToken_flows(t *testing.T) {
 		}
 	})
 }
+
+func TestIntegration_MastodonUnfollow_removesFollowEdge(t *testing.T) {
+	ctx := context.Background()
+	dsn := testDatabaseURL(t)
+	if err := migrate.Up(dsn, findMigrationsDir(t)); err != nil {
+		t.Fatal(err)
+	}
+	st, err := postgres.NewPool(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Pool.Close()
+	truncateMastodonTestDB(t, st.Pool)
+
+	cfg := &config.Config{
+		PublicBaseURL:  "https://unfollow-int.test",
+		LocalUsername:  "alice",
+		LocalUsernames: []string{"alice", "bob"},
+	}
+	h, err := aphttp.New(cfg, aphttp.Deps{Store: st, Queue: mastodonTestQueueNoop{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	srv := &Server{H: h, Pool: st.Pool}
+	srv.mountMastodon(mux)
+
+	aliceID, ok := h.LocalActorID("alice")
+	if !ok || aliceID < 1 {
+		t.Fatalf("alice id=%d ok=%v", aliceID, ok)
+	}
+	bobID, ok := h.LocalActorID("bob")
+	if !ok || bobID < 1 {
+		t.Fatalf("bob id=%d ok=%v", bobID, ok)
+	}
+
+	const rawToken = "unfollow-test-token"
+	app, err := store.InsertOAuthApplication(ctx, st.Pool, "uf", "https://app/cb", "", "read write")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Pool.Exec(ctx, `
+		INSERT INTO oauth_access_tokens (token_hash, application_id, actor_id, scopes)
+		VALUES ($1, $2, $3, 'read write')`, hashAccessToken(rawToken), app.ID, aliceID); err != nil {
+		t.Fatal(err)
+	}
+
+	followActID := "https://unfollow-int.test/#/activities/seed-follow"
+	if err := store.UpsertFollow(ctx, st.Pool, aliceID, bobID, followActID, store.FollowStateAccepted); err != nil {
+		t.Fatal(err)
+	}
+	okFollow, err := store.FollowExistsBetween(ctx, st.Pool, aliceID, bobID)
+	if err != nil || !okFollow {
+		t.Fatalf("seed follow: ok=%v err=%v", okFollow, err)
+	}
+
+	rec := httptest.NewRecorder()
+	unfollowPath := "/api/v1/accounts/" + strconv.FormatInt(bobID, 10) + "/unfollow"
+	mux.ServeHTTP(rec, newAuthedRequest(http.MethodPost, unfollowPath, rawToken))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body.String())
+	}
+	still, err := store.FollowExistsBetween(ctx, st.Pool, aliceID, bobID)
+	if err != nil || still {
+		t.Fatalf("expected no follow after unfollow: still=%v err=%v", still, err)
+	}
+
+	rec2 := httptest.NewRecorder()
+	mux.ServeHTTP(rec2, newAuthedRequest(http.MethodPost, unfollowPath, rawToken))
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("idempotent unfollow %d %s", rec2.Code, rec2.Body.String())
+	}
+}
+
+// mastodonTestQueueNoop satisfies queue.Backend for integration tests that call PublishLocalActivityBytes.
+type mastodonTestQueueNoop struct{}
+
+func (mastodonTestQueueNoop) Enqueue(ctx context.Context, job queue.Job) error { return nil }
+
+func (mastodonTestQueueNoop) Dequeue(ctx context.Context) (*queue.Lease, error) { return nil, nil }
+
+func (mastodonTestQueueNoop) Ack(ctx context.Context, id int64) error { return nil }
+
+func (mastodonTestQueueNoop) Nack(ctx context.Context, id int64, requeue bool) error { return nil }

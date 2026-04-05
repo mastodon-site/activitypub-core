@@ -117,29 +117,6 @@ func (s *Server) getAccountStatuses(w http.ResponseWriter, r *http.Request) {
 	writeJSONArrayOK(w, nil)
 }
 
-func (s *Server) postAccountUnfollow(w http.ResponseWriter, r *http.Request, _ int64) {
-	if r.Method != http.MethodPost {
-		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	rawID := r.PathValue("id")
-	writeJSONResponse(w, http.StatusOK, map[string]any{
-		"id":                   rawID,
-		"following":            false,
-		"requested":            false,
-		"showing_reblogs":      true,
-		"notifying":            false,
-		"followed_by":          false,
-		"blocking":             false,
-		"blocked_by":           false,
-		"muting":               false,
-		"muting_notifications": false,
-		"endorsed":             false,
-		"note":                 "",
-		"account":              nil,
-	})
-}
-
 // --- Statuses ---
 
 func (s *Server) getStatus(w http.ResponseWriter, r *http.Request) {

@@ -297,12 +297,22 @@ func (s *Server) getTimelineHome(w http.ResponseWriter, r *http.Request, actorID
 	_ = json.NewEncoder(w).Encode(out)
 }
 
+// normalizeMastodonSearchQuery trims the query and strips a single leading "@"
+// so "@user@remote" and "user@remote" both resolve (Mastodon clients often send the former).
+func normalizeMastodonSearchQuery(q string) string {
+	q = strings.TrimSpace(q)
+	if strings.HasPrefix(q, "@") {
+		q = strings.TrimSpace(strings.TrimPrefix(q, "@"))
+	}
+	return strings.TrimSpace(q)
+}
+
 func (s *Server) getAccountSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	q := normalizeMastodonSearchQuery(r.URL.Query().Get("q"))
 	if q == "" {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode([]any{})
@@ -403,12 +413,45 @@ func webfingerProfileURL(ctx context.Context, cli *http.Client, user, host strin
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&doc); err != nil {
 		return "", err
 	}
+	links := make([]webfingerLink, 0, len(doc.Links))
 	for _, l := range doc.Links {
-		if l.Rel == "self" && strings.Contains(strings.ToLower(l.Type), "activity+json") && l.Href != "" {
-			return l.Href, nil
+		links = append(links, webfingerLink{Rel: l.Rel, Type: l.Type, Href: l.Href})
+	}
+	return pickActorHrefFromWebfingerLinks(links)
+}
+
+type webfingerLink struct {
+	Rel  string
+	Type string
+	Href string
+}
+
+// pickActorHrefFromWebFingerLinks selects the actor document href from WebFinger JRD links.
+// Mastodon often advertises application/activity+json; many stacks use application/ld+json with an ActivityStreams profile instead.
+func pickActorHrefFromWebfingerLinks(links []webfingerLink) (string, error) {
+	var ldFallback string
+	for _, l := range links {
+		if !strings.EqualFold(strings.TrimSpace(l.Rel), "self") {
+			continue
+		}
+		href := strings.TrimSpace(l.Href)
+		if href == "" {
+			continue
+		}
+		t := strings.ToLower(strings.TrimSpace(l.Type))
+		if strings.Contains(t, "activity+json") {
+			return href, nil
+		}
+		if strings.Contains(t, "ld+json") {
+			if ldFallback == "" {
+				ldFallback = href
+			}
 		}
 	}
-	return "", fmt.Errorf("no activity+json self link")
+	if ldFallback != "" {
+		return ldFallback, nil
+	}
+	return "", fmt.Errorf("no suitable ActivityPub self link in WebFinger")
 }
 
 func (s *Server) accountFromActorURL(ctx context.Context, actorURL string) (map[string]any, error) {
@@ -514,6 +557,7 @@ func (s *Server) postAccountFollow(w http.ResponseWriter, r *http.Request, actor
 		"type":     "Follow",
 		"id":       followActivityID,
 		"actor":    prof,
+		"to":       []any{targetURL},
 		"object":   targetURL,
 	}
 	rawFollow, err := json.Marshal(followMap)
@@ -543,4 +587,91 @@ func (s *Server) postAccountFollow(w http.ResponseWriter, r *http.Request, actor
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(out)
+}
+
+func (s *Server) postAccountUnfollow(w http.ResponseWriter, r *http.Request, actorID int64) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	rawID := r.PathValue("id")
+	targetID, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil || targetID < 1 {
+		writeAPIError(w, http.StatusBadRequest, "invalid id")
+		return
+	}
+	ctx := r.Context()
+	uname, _, _, _, _, err := store.ActorForMastodon(ctx, s.Pool, actorID)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "Record not found")
+		return
+	}
+	if !s.H.IsLocalActor(uname) {
+		writeAPIError(w, http.StatusForbidden, "not a local account")
+		return
+	}
+	followAct, followeeURL, ok, err := store.LookupActiveFollowForUndo(ctx, s.Pool, actorID, targetID)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "could not load relationship")
+		return
+	}
+	if !ok {
+		writeJSONResponse(w, http.StatusOK, map[string]any{
+			"id":                   rawID,
+			"following":            false,
+			"requested":            false,
+			"showing_reblogs":      true,
+			"notifying":            false,
+			"followed_by":          false,
+			"blocking":             false,
+			"blocked_by":           false,
+			"muting":               false,
+			"muting_notifications": false,
+			"endorsed":             false,
+			"note":                 "",
+			"account":              nil,
+		})
+		return
+	}
+	prof := s.cfg().LocalActorProfileURL(uname)
+	root := strings.TrimRight(s.cfg().PublicBaseURL, "/")
+	undoID := newIRI(root, "activities")
+	embedFollow := map[string]any{
+		"type":   "Follow",
+		"id":     followAct,
+		"actor":  prof,
+		"object": followeeURL,
+	}
+	undoMap := map[string]any{
+		"@context": []any{"https://www.w3.org/ns/activitystreams"},
+		"type":     "Undo",
+		"id":       undoID,
+		"actor":    prof,
+		"to":       []any{followeeURL},
+		"object":   embedFollow,
+	}
+	rawUndo, err := json.Marshal(undoMap)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "could not build activity")
+		return
+	}
+	if err := s.H.PublishLocalActivityBytes(ctx, uname, rawUndo); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSONResponse(w, http.StatusOK, map[string]any{
+		"id":                   rawID,
+		"following":            false,
+		"requested":            false,
+		"showing_reblogs":      true,
+		"notifying":            false,
+		"followed_by":          false,
+		"blocking":             false,
+		"blocked_by":           false,
+		"muting":               false,
+		"muting_notifications": false,
+		"endorsed":             false,
+		"note":                 "",
+		"account":              nil,
+	})
 }

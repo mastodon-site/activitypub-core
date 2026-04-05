@@ -8,17 +8,21 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mastodon-site/activitypub-core/internal/config"
 )
 
+// rowQuerier matches *pgxpool.Pool and pgx.Tx for local actor resolution queries.
+type rowQuerier interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
 // ResolveLocalFolloweeFromObjectIRI returns the local actors row targeted by Follow.object.
 // Remote Mastodon stacks often use /@handle, /users/handle, or different casing than the DB username;
 // workers may also run with a stale AP_LOCAL_USERNAMES list, so this prefers database matching.
-func ResolveLocalFolloweeFromObjectIRI(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config, objectIRI string) (followeeID int64, localUsername string, err error) {
+func ResolveLocalFolloweeFromObjectIRI(ctx context.Context, q rowQuerier, cfg *config.Config, objectIRI string) (followeeID int64, localUsername string, err error) {
 	objectIRI = strings.TrimSpace(objectIRI)
-	if pool == nil || cfg == nil || objectIRI == "" {
+	if q == nil || cfg == nil || objectIRI == "" {
 		return 0, "", fmt.Errorf("follow object is not a local actor")
 	}
 	base, err := url.Parse(strings.TrimSpace(cfg.PublicBaseURL))
@@ -35,7 +39,7 @@ func ResolveLocalFolloweeFromObjectIRI(ctx context.Context, pool *pgxpool.Pool, 
 
 	var id int64
 	var username string
-	err = pool.QueryRow(ctx, `
+	err = q.QueryRow(ctx, `
 		SELECT id, username FROM actors
 		WHERE trim(trailing '/' from actor_url) = $1 AND lower(domain) = lower($2)
 	`, canon, instDomain).Scan(&id, &username)
@@ -47,7 +51,7 @@ func ResolveLocalFolloweeFromObjectIRI(ctx context.Context, pool *pgxpool.Pool, 
 	}
 
 	if u, ok := cfg.LocalUsernameForInboundFollowObject(canon); ok {
-		fid, err := ActorIDByActorURL(ctx, pool, cfg.LocalActorProfileURL(u))
+		fid, err := ActorIDByActorURLQ(ctx, q, cfg.LocalActorProfileURL(u))
 		if err != nil {
 			return 0, "", fmt.Errorf("followee actor: %w", err)
 		}
@@ -80,7 +84,7 @@ func ResolveLocalFolloweeFromObjectIRI(ctx context.Context, pool *pgxpool.Pool, 
 		return 0, "", fmt.Errorf("follow object is not a local actor")
 	}
 
-	err = pool.QueryRow(ctx, `
+	err = q.QueryRow(ctx, `
 		SELECT id, username FROM actors
 		WHERE lower(domain) = lower($1) AND lower(username) = lower($2)
 		LIMIT 1
