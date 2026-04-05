@@ -14,6 +14,22 @@ jobs:
   go-tests:
     name: Go Tests and Checks
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: activitypub_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d activitypub_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      AP_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/activitypub_test?sslmode=disable
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
