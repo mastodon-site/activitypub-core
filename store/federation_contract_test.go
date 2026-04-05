@@ -141,6 +141,7 @@ func TestIntegration_EnsureLocalActor_migratesLegacyActorURL(t *testing.T) {
 	if want := cfg.LocalActorInboxURL("admin"); gotInbox != want {
 		t.Fatalf("inbox_url got %q want %q", gotInbox, want)
 	}
+
 	if want := cfg.LocalActorOutboxURL("admin"); gotOutbox != want {
 		t.Fatalf("outbox_url got %q want %q", gotOutbox, want)
 	}
