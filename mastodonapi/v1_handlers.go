@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+
+	"github.com/mastodon-site/activitypub-core/store"
 )
 
 // --- Accounts ---
@@ -109,14 +111,6 @@ func (s *Server) getAccountLookup(w http.ResponseWriter, r *http.Request) {
 	writeJSONResponse(w, http.StatusOK, accounts[0])
 }
 
-func (s *Server) getAccountStatuses(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	writeJSONArrayOK(w, nil)
-}
-
 // --- Statuses ---
 
 func (s *Server) getStatus(w http.ResponseWriter, r *http.Request) {
@@ -124,13 +118,49 @@ func (s *Server) getStatus(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	writeAPIError(w, http.StatusNotFound, "Record not found")
+	if s.Pool == nil {
+		writeAPIError(w, http.StatusNotFound, "Record not found")
+		return
+	}
+	raw := r.PathValue("id")
+	dbID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || dbID < 1 {
+		writeAPIError(w, http.StatusNotFound, "Record not found")
+		return
+	}
+	row, err := store.GetActivityByID(r.Context(), s.Pool, dbID)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "Record not found")
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(row.Type), "create") {
+		writeAPIError(w, http.StatusNotFound, "Record not found")
+		return
+	}
+	st, ok := s.mastodonStatusFromCreateRow(r.Context(), *row)
+	if !ok {
+		writeAPIError(w, http.StatusNotFound, "Record not found")
+		return
+	}
+	writeJSONResponse(w, http.StatusOK, st)
 }
 
 func (s *Server) getStatusContext(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
+	}
+	if s.Pool != nil {
+		raw := r.PathValue("id")
+		dbID, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || dbID < 1 {
+			writeAPIError(w, http.StatusNotFound, "Record not found")
+			return
+		}
+		if _, err := store.GetActivityByID(r.Context(), s.Pool, dbID); err != nil {
+			writeAPIError(w, http.StatusNotFound, "Record not found")
+			return
+		}
 	}
 	writeJSONObjectOK(w, map[string]any{
 		"ancestors":   []any{},

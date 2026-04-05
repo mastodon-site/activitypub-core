@@ -30,6 +30,79 @@ func GetActivityByID(ctx context.Context, pool *pgxpool.Pool, id int64) (*Activi
 	return &r, nil
 }
 
+// ListRecentCreateActivitiesForActor returns recent Create activities for one actor (newest first).
+func ListRecentCreateActivitiesForActor(ctx context.Context, pool *pgxpool.Pool, actorID int64, limit int) ([]ActivityRow, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 80 {
+		limit = 80
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT id, activity_id, actor_id, type, raw_json
+		FROM activities
+		WHERE actor_id = $1 AND lower(type) = 'create'
+		ORDER BY id DESC
+		LIMIT $2
+	`, actorID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list creates: %w", err)
+	}
+	defer rows.Close()
+	return scanActivityRows(rows)
+}
+
+// ListRecentPublicCreateActivities returns recent Create activities from actors on instanceDomain (newest first).
+func ListRecentPublicCreateActivities(ctx context.Context, pool *pgxpool.Pool, instanceDomain string, limit int) ([]ActivityRow, error) {
+	instanceDomain = strings.TrimSpace(instanceDomain)
+	if instanceDomain == "" {
+		return nil, fmt.Errorf("instance domain required")
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 80 {
+		limit = 80
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT a.id, a.activity_id, a.actor_id, a.type, a.raw_json
+		FROM activities a
+		INNER JOIN actors act ON act.id = a.actor_id
+		WHERE lower(a.type) = 'create' AND lower(act.domain) = lower($1)
+		ORDER BY a.id DESC
+		LIMIT $2
+	`, instanceDomain, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list public creates: %w", err)
+	}
+	defer rows.Close()
+	return scanActivityRows(rows)
+}
+
+func scanActivityRows(rows pgx.Rows) ([]ActivityRow, error) {
+	var out []ActivityRow
+	for rows.Next() {
+		var r ActivityRow
+		if err := rows.Scan(&r.ID, &r.ActivityID, &r.ActorID, &r.Type, &r.RawJSON); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ActivityIDByActorAndActivityIRI returns the activities.id for a stored activity_id string.
+func ActivityIDByActorAndActivityIRI(ctx context.Context, pool *pgxpool.Pool, actorID int64, activityIRI string) (int64, error) {
+	var id int64
+	err := pool.QueryRow(ctx, `
+		SELECT id FROM activities WHERE actor_id = $1 AND activity_id = $2
+	`, actorID, activityIRI).Scan(&id)
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
 // CanonicalActorURL trims space and trailing slashes for comparison.
 func CanonicalActorURL(s string) string {
 	return strings.TrimRight(strings.TrimSpace(s), "/")

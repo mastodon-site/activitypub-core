@@ -89,6 +89,15 @@ func mastodonIntegrationStubFetchClient(publicBaseURL string) *http.Client {
 	})}
 }
 
+func mastodonIntegrationAPHTTPDeps(cfg *config.Config, st *store.Postgres) aphttp.Deps {
+	return aphttp.Deps{
+		Store:       st,
+		Queue:       mastodonTestQueueNoop{},
+		FetchPolicy: fetch.TestingPolicy(),
+		FetchClient: mastodonIntegrationStubFetchClient(cfg.PublicBaseURL),
+	}
+}
+
 func truncateMastodonTestDB(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
@@ -140,7 +149,7 @@ func TestIntegration_MastodonRoutes_withDatabase(t *testing.T) {
 	truncateMastodonTestDB(t, st.Pool)
 
 	cfg := &config.Config{PublicBaseURL: "https://routes-int.test", LocalUsername: "alice", LocalUsernames: []string{"alice"}}
-	h, err := aphttp.New(cfg, aphttp.Deps{Store: st, Queue: mastodonTestQueueNoop{}})
+	h, err := aphttp.New(cfg, mastodonIntegrationAPHTTPDeps(cfg, st))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,6 +358,106 @@ func TestIntegration_MastodonRoutes_withDatabase(t *testing.T) {
 		mux.ServeHTTP(rec, newAuthedRequest(http.MethodPatch, "/api/v1/accounts/update_credentials", rawToken))
 		if rec.Code != http.StatusOK {
 			t.Fatalf("%d %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("post_status_home_public_account_get_context", func(t *testing.T) {
+		body := `{"status":"hello timeline read"}`
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/statuses", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+rawToken)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("post %d %s", rec.Code, rec.Body.String())
+		}
+		var posted map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &posted); err != nil {
+			t.Fatal(err)
+		}
+		statusID := fmt.Sprint(posted["id"])
+		if statusID == "" || statusID == "0" {
+			t.Fatalf("status id: %#v", posted["id"])
+		}
+
+		recHome := httptest.NewRecorder()
+		mux.ServeHTTP(recHome, newAuthedRequest(http.MethodGet, "/api/v1/timelines/home", rawToken))
+		if recHome.Code != http.StatusOK {
+			t.Fatalf("home %d %s", recHome.Code, recHome.Body.String())
+		}
+		var homeList []map[string]any
+		if err := json.Unmarshal(recHome.Body.Bytes(), &homeList); err != nil {
+			t.Fatal(err)
+		}
+		foundHome := false
+		for _, row := range homeList {
+			if fmt.Sprint(row["id"]) == statusID {
+				foundHome = true
+				break
+			}
+		}
+		if !foundHome {
+			t.Fatalf("home timeline missing status %s: %s", statusID, recHome.Body.String())
+		}
+
+		recPub := httptest.NewRecorder()
+		mux.ServeHTTP(recPub, httptest.NewRequest(http.MethodGet, "/api/v1/timelines/public", nil))
+		if recPub.Code != http.StatusOK {
+			t.Fatalf("public %d %s", recPub.Code, recPub.Body.String())
+		}
+		var pubList []map[string]any
+		if err := json.Unmarshal(recPub.Body.Bytes(), &pubList); err != nil {
+			t.Fatal(err)
+		}
+		foundPub := false
+		for _, row := range pubList {
+			if fmt.Sprint(row["id"]) == statusID {
+				foundPub = true
+				break
+			}
+		}
+		if !foundPub {
+			t.Fatalf("public timeline missing status %s: %s", statusID, recPub.Body.String())
+		}
+
+		acctPath := "/api/v1/accounts/" + strconv.FormatInt(actorID, 10) + "/statuses"
+		recAcct := httptest.NewRecorder()
+		mux.ServeHTTP(recAcct, httptest.NewRequest(http.MethodGet, acctPath, nil))
+		if recAcct.Code != http.StatusOK {
+			t.Fatalf("account statuses %d %s", recAcct.Code, recAcct.Body.String())
+		}
+		var acctStatuses []map[string]any
+		if err := json.Unmarshal(recAcct.Body.Bytes(), &acctStatuses); err != nil {
+			t.Fatal(err)
+		}
+		foundAcct := false
+		for _, row := range acctStatuses {
+			if fmt.Sprint(row["id"]) == statusID {
+				foundAcct = true
+				break
+			}
+		}
+		if !foundAcct {
+			t.Fatalf("account statuses missing %s: %s", statusID, recAcct.Body.String())
+		}
+
+		recOne := httptest.NewRecorder()
+		mux.ServeHTTP(recOne, httptest.NewRequest(http.MethodGet, "/api/v1/statuses/"+statusID, nil))
+		if recOne.Code != http.StatusOK {
+			t.Fatalf("get status %d %s", recOne.Code, recOne.Body.String())
+		}
+		var one map[string]any
+		if err := json.Unmarshal(recOne.Body.Bytes(), &one); err != nil {
+			t.Fatal(err)
+		}
+		if fmt.Sprint(one["id"]) != statusID {
+			t.Fatalf("get status id mismatch: %#v", one["id"])
+		}
+
+		recCtx := httptest.NewRecorder()
+		mux.ServeHTTP(recCtx, httptest.NewRequest(http.MethodGet, "/api/v1/statuses/"+statusID+"/context", nil))
+		if recCtx.Code != http.StatusOK {
+			t.Fatalf("context %d %s", recCtx.Code, recCtx.Body.String())
 		}
 	})
 }
@@ -609,12 +718,7 @@ func TestIntegration_MastodonUnfollow_removesFollowEdge(t *testing.T) {
 		LocalUsername:  "alice",
 		LocalUsernames: []string{"alice", "bob"},
 	}
-	h, err := aphttp.New(cfg, aphttp.Deps{
-		Store:       st,
-		Queue:       mastodonTestQueueNoop{},
-		FetchPolicy: fetch.TestingPolicy(),
-		FetchClient: mastodonIntegrationStubFetchClient(cfg.PublicBaseURL),
-	})
+	h, err := aphttp.New(cfg, mastodonIntegrationAPHTTPDeps(cfg, st))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -47,8 +47,8 @@ func (s *Server) mountMastodon(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/accounts/{id}/note", b(s.v1StubBearerEmptyObject))
 
 	mux.HandleFunc("GET /api/v1/accounts/{id}/statuses", s.getAccountStatuses)
-	mux.HandleFunc("GET /api/v1/accounts/{id}/followers", s.v1StubGETEmptyArray)
-	mux.HandleFunc("GET /api/v1/accounts/{id}/following", s.v1StubGETEmptyArray)
+	mux.HandleFunc("GET /api/v1/accounts/{id}/followers", s.getAccountFollowers)
+	mux.HandleFunc("GET /api/v1/accounts/{id}/following", s.getAccountFollowing)
 	mux.HandleFunc("GET /api/v1/accounts/{id}/lists", s.v1StubGETEmptyArray)
 	mux.HandleFunc("GET /api/v1/accounts/{id}/identity_proofs", s.v1StubGETEmptyArray)
 	mux.HandleFunc("GET /api/v1/accounts/{id}/featured_tags", s.v1StubGETEmptyArray)
