@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -357,10 +358,19 @@ func normalizedOutboxActivityType(t string) string {
 }
 
 func resolveFolloweeActorID(ctx context.Context, tx pgx.Tx, cfg *config.Config, objectIRI string) (int64, error) {
-	canon := store.CanonicalActorURL(objectIRI)
-	if u, ok := cfg.LocalUsernameForInboundFollowObject(canon); ok {
-		return store.ActorIDByActorURLQ(ctx, tx, cfg.LocalActorProfileURL(u))
+	if id, _, err := store.ResolveLocalFolloweeFromObjectIRI(ctx, tx, cfg, objectIRI); err == nil {
+		return id, nil
 	}
+	base, err := url.Parse(strings.TrimSpace(cfg.PublicBaseURL))
+	if err != nil || base.Hostname() == "" {
+		return 0, fmt.Errorf("invalid instance config")
+	}
+	if obj, err := url.Parse(strings.TrimSpace(objectIRI)); err == nil && obj.Hostname() != "" {
+		if strings.EqualFold(obj.Hostname(), base.Hostname()) {
+			return 0, fmt.Errorf("follow object is not a local actor")
+		}
+	}
+	canon := store.CanonicalActorURL(objectIRI)
 	return store.EnsureRemoteActor(ctx, tx, canon, "(remote-followee)")
 }
 

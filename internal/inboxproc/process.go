@@ -34,6 +34,11 @@ type DeliverPayload struct {
 // Follow, Accept, and Reject do not use that filter (delivery to our inbox already scopes them).
 // fetchPolicy overrides outbound URL policy when non-nil (tests); production callers pass nil.
 func ProcessInboxActivity(ctx context.Context, pool *pgxpool.Pool, q queue.Backend, cfg *config.Config, httpClient *http.Client, activityDBID int64, fetchPolicy *fetch.Policy) error {
+	if pool != nil && cfg != nil {
+		if err := store.AugmentLocalUsernamesFromDB(ctx, pool, cfg); err != nil {
+			return fmt.Errorf("augment local usernames: %w", err)
+		}
+	}
 	row, err := store.GetActivityByID(ctx, pool, activityDBID)
 	if err != nil {
 		return err
