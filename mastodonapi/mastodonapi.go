@@ -312,6 +312,19 @@ func (s *Server) getAccountSearch(w http.ResponseWriter, r *http.Request) {
 	host := s.instanceHost()
 	cli := s.H.FederationHTTPClient()
 
+	// Bare local handle (Ivory/Mastodon often search without repeating @host for the current instance).
+	if s.Pool != nil && !strings.Contains(q, "@") &&
+		!strings.HasPrefix(strings.ToLower(q), "acct:") &&
+		!strings.HasPrefix(q, "http://") && !strings.HasPrefix(q, "https://") {
+		if id, err := store.LocalActorIDForInstanceUsernameCI(ctx, s.Pool, host, q); err == nil {
+			if m, err := s.accountMap(ctx, id); err == nil {
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				_ = json.NewEncoder(w).Encode([]any{m})
+				return
+			}
+		}
+	}
+
 	// Local acct:user@thishost
 	if user, dom, ok := parseAcct(q); ok && strings.EqualFold(dom, host) && s.H.IsLocalActor(user) {
 		id, ok := s.H.LocalActorID(user)

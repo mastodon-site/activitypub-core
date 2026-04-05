@@ -24,14 +24,9 @@ func handleFollow(ctx context.Context, pool *pgxpool.Pool, q queue.Backend, cfg 
 	if err != nil {
 		return err
 	}
-	followeeUser, ok := cfg.LocalUsernameForInboundFollowObject(objectIRI)
-	if !ok {
-		return fmt.Errorf("follow object is not a local actor")
-	}
-	// DB rows use canonical /@ profile IRIs; remote software may use /users/… in Follow.object.
-	followeeID, err := store.ActorIDByActorURL(ctx, pool, cfg.LocalActorProfileURL(followeeUser))
+	followeeID, followeeUser, err := store.ResolveLocalFolloweeFromObjectIRI(ctx, pool, cfg, objectIRI)
 	if err != nil {
-		return fmt.Errorf("followee actor: %w", err)
+		return err
 	}
 	followerID := row.ActorID
 	if err := store.UpsertFollow(ctx, pool, followerID, followeeID, row.ActivityID, store.FollowStatePending); err != nil {

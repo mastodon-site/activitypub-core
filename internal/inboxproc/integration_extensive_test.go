@@ -707,3 +707,100 @@ func TestIntegration_Follow_objectUsesMastodonUsersPath(t *testing.T) {
 		t.Fatalf("follow rows %d", cnt)
 	}
 }
+
+func TestIntegration_Follow_usersPathCaseInsensitive(t *testing.T) {
+	ctx, pool := testPool(t)
+	cfg := &config.Config{
+		PublicBaseURL:    "https://fci.test",
+		LocalUsernames:   []string{"admin"},
+		LocalUsername:    "admin",
+		FollowAutoAccept: false,
+	}
+	if _, err := store.UpsertLocalActor(ctx, pool, cfg, "admin", "k"); err != nil {
+		t.Fatal(err)
+	}
+	allyID, err := store.EnsureRemoteActor(ctx, pool, "https://remote.test/users/ally", "pem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertProcess(t, ctx, pool, cfg, allyID, "https://remote.test/act/f-ci", "Follow", map[string]any{
+		"id":     "https://remote.test/act/f-ci",
+		"type":   "Follow",
+		"actor":  "https://remote.test/users/ally",
+		"to":     []string{cfg.LocalActorProfileURL("admin")},
+		"object": "https://fci.test/users/Admin",
+	})
+	var cnt int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM follows f
+		JOIN actors fe ON fe.id = f.followee_actor_id
+		WHERE f.follower_actor_id = $1 AND fe.username = 'admin'
+	`, allyID).Scan(&cnt); err != nil {
+		t.Fatal(err)
+	}
+	if cnt != 1 {
+		t.Fatalf("follow rows %d", cnt)
+	}
+}
+
+// Bootstrap "admin" exists only in DB; initial config lists only "carol". Per-job augment must still
+// resolve /@admin and record the inbound follow.
+func TestIntegration_Follow_dbOnlyLocalUserNotInInitialUsernames(t *testing.T) {
+	ctx, pool := testPool(t)
+	cfg := &config.Config{
+		PublicBaseURL:    "https://aug.test",
+		LocalUsernames:   []string{"carol"},
+		LocalUsername:    "carol",
+		FollowAutoAccept: false,
+	}
+	if _, err := store.EnsureLocalActor(ctx, pool, cfg, "carol", "k"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertLocalActor(ctx, pool, cfg, "admin", "k"); err != nil {
+		t.Fatal(err)
+	}
+	allyID, err := store.EnsureRemoteActor(ctx, pool, "https://remote.test/users/allyaug", "pem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertProcess(t, ctx, pool, cfg, allyID, "https://remote.test/act/f-aug", "Follow", map[string]any{
+		"id":     "https://remote.test/act/f-aug",
+		"type":   "Follow",
+		"actor":  "https://remote.test/users/allyaug",
+		"to":     []string{"https://aug.test/@admin"},
+		"object": "https://aug.test/@admin",
+	})
+	var cnt int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM follows f
+		JOIN actors fe ON fe.id = f.followee_actor_id
+		WHERE f.follower_actor_id = $1 AND fe.username = 'admin'
+	`, allyID).Scan(&cnt); err != nil {
+		t.Fatal(err)
+	}
+	if cnt != 1 {
+		t.Fatalf("follow rows %d", cnt)
+	}
+}
+
+func TestIntegration_Follow_objectFollowersCollectionRejected(t *testing.T) {
+	ctx, pool := testPool(t)
+	cfg := &config.Config{
+		PublicBaseURL:  "https://frej.test",
+		LocalUsernames: []string{"bob"},
+		LocalUsername:  "bob",
+	}
+	if _, err := store.EnsureLocalActor(ctx, pool, cfg, "bob", "k"); err != nil {
+		t.Fatal(err)
+	}
+	allyID, err := store.EnsureRemoteActor(ctx, pool, "https://remote.test/users/z", "pem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	insertProcessExpectErr(t, ctx, pool, cfg, allyID, "https://remote.test/act/bad-follow-coll", "Follow", map[string]any{
+		"id":     "https://remote.test/act/bad-follow-coll",
+		"type":   "Follow",
+		"actor":  "https://remote.test/users/z",
+		"object": cfg.LocalActorFollowersURL("bob"),
+	})
+}

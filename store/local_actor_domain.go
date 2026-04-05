@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strings"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -23,6 +24,18 @@ func ListLocalActorsOnDomain(ctx context.Context, pool *pgxpool.Pool, domain str
 		out[u] = id
 	}
 	return out, rows.Err()
+}
+
+// LocalActorIDForInstanceUsernameCI looks up actors.id for this instance's domain using case-insensitive username.
+// Used for Mastodon account search when the client sends a bare handle without @domain.
+func LocalActorIDForInstanceUsernameCI(ctx context.Context, pool *pgxpool.Pool, instanceHost, username string) (int64, error) {
+	var id int64
+	err := pool.QueryRow(ctx, `
+		SELECT id FROM actors
+		WHERE lower(domain) = lower($1) AND lower(username) = lower($2)
+		LIMIT 1
+	`, strings.TrimSpace(instanceHost), strings.TrimSpace(username)).Scan(&id)
+	return id, err
 }
 
 // LocalActorUsernameExists reports whether an actor row exists for this instance domain and username.

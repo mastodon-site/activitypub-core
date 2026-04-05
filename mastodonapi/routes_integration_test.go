@@ -225,6 +225,43 @@ func TestIntegration_MastodonRoutes_withDatabase(t *testing.T) {
 		}
 	})
 
+	t.Run("accounts_search_bare_handle_case_insensitive", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		path := "/api/v1/accounts/search?q=" + url.QueryEscape("ALICE")
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%d %s", rec.Code, rec.Body.String())
+		}
+		var accts []map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &accts); err != nil {
+			t.Fatal(err)
+		}
+		if len(accts) != 1 || accts[0]["username"] != "alice" {
+			t.Fatalf("got %#v", accts)
+		}
+	})
+
+	t.Run("search_v2_bare_local_handle", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		q := "/api/v2/search?q=" + url.QueryEscape("alice") + "&type=accounts"
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, q, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%d %s", rec.Code, rec.Body.String())
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+			t.Fatal(err)
+		}
+		accts, ok := doc["accounts"].([]any)
+		if !ok || len(accts) != 1 {
+			t.Fatalf("accounts: %#v", doc["accounts"])
+		}
+		first, ok := accts[0].(map[string]any)
+		if !ok || first["username"] != "alice" {
+			t.Fatalf("account: %#v", accts[0])
+		}
+	})
+
 	t.Run("account_lookup", func(t *testing.T) {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/v1/accounts/lookup?acct=alice@routes-int.test", nil))
