@@ -19,8 +19,11 @@ Served on **`AP_HTTP_LISTEN`** (default `:8080`). Unless noted, paths are rooted
 | `/media` | `POST` | Media upload (when configured). |
 | `/media/{key...}` | `GET` | Fetch uploaded blob by key. |
 | `/inbox` | `POST` | Shared inbox: verify HTTP Signatures + Digest, persist activity, enqueue `process_inbox_activity` when DB and queue are configured. |
-| `/api/v1/instance` | `GET` | Mastodon-style instance metadata (Ivory / legacy clients). |
+| `/api/v1/instance` | `GET` | Mastodon 4.x–compatible instance metadata (still used alongside v2). |
 | `/api/v2/instance` | `GET` | Mastodon 4.x instance entity (configuration, `api_versions`, etc.). |
+| `/api/v2/search` | `GET` | Unified search (same behavior as `/api/v1/search`; Mastodon 4 clients often call v2). |
+| `/api/v2/filters` | `GET` | Empty filter list (`[]`; content filters not implemented). |
+| `/api/v2/suggestions` | `GET` | Empty suggestions (`[]`). |
 | `/api/v1/instance/extended_description` | `GET` | Empty extended description JSON (client probes). |
 | `/.well-known/oauth-authorization-server` | `GET` | OAuth 2.0 Authorization Server Metadata (RFC 8414); discovery for `/oauth/*`. |
 | `/api/v1/custom_emojis` | `GET` | Empty array `[]` (emoji catalog stub). |
@@ -42,7 +45,7 @@ Served on **`AP_HTTP_LISTEN`** (default `:8080`). Unless noted, paths are rooted
 
 `AP_METRICS_LISTEN` is reserved for a separate metrics listener; today metrics also appear on the main mux above.
 
-### Mastodon-compatible API (Ivory)
+### Mastodon 4.x–compatible API (e.g. Ivory)
 
 1. Set **`AP_PUBLIC_BASE_URL`** to the URL clients use to reach `apd` (for Ivory on a phone this should be a **public HTTPS** URL, e.g. via [ngrok](https://ngrok.com/), not only `http://localhost`).
 2. Ensure **`AP_DATABASE_URL`**, **`AP_QUEUE_BACKEND=sql`**, and **`AP_ACTOR_PRIVATE_KEY_PATH`** are set; run **`apw`** so deliveries and inbox processing run.
@@ -51,7 +54,7 @@ Served on **`AP_HTTP_LISTEN`** (default `:8080`). Unless noted, paths are rooted
 
 **Federation checklist:** HTTPS on the public URL, worker running, Postgres migrated, queue drained for `deliver_activity`; remote servers may require signed fetches (`AP_SIGN_GET`, `AP_REQUIRE_AUTHORIZED_FETCH` on peers) per their policy.
 
-**Limitations:** one shared **`AP_ACTOR_PRIVATE_KEY_PATH`** is used to sign deliveries for all local users until per-user keys exist; Mastodon API coverage is minimal (no streaming, notifications, or full status read model); `apw` validates signing users against Postgres when a pool is available.
+**Limitations:** one shared **`AP_ACTOR_PRIVATE_KEY_PATH`** is used to sign deliveries for all local users until per-user keys exist; the Mastodon **4.x** client API is mostly stubbed beyond login, post, search, and follow (no streaming, real notifications, or full status read model); `apw` validates signing users against Postgres when a pool is available.
 
 ### Docker Compose
 

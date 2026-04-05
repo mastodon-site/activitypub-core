@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"html"
 	"html/template"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -246,4 +247,17 @@ func pkceVerify(verifier string, row store.AuthCodeRow) error {
 	default:
 		return fmt.Errorf("unsupported code_challenge_method")
 	}
+}
+
+// postOAuthRevoke handles POST /oauth/revoke (RFC 7009-style token revocation probe from clients).
+// Tokens are not revoked server-side yet; the endpoint returns 200 so clients do not break.
+func (s *Server) postOAuthRevoke(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, 1<<20))
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("{}"))
 }

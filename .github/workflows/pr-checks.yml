@@ -14,6 +14,22 @@ jobs:
   go-tests:
     name: Go Tests and Checks
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: activitypub_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d activitypub_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    env:
+      AP_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/activitypub_test?sslmode=disable
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -36,25 +52,10 @@ jobs:
       - name: Install dependencies
         run: go mod download
 
-      - name: Verify modules
-        run: go mod verify
-
-      - name: Run fmt check
-        run: |
-          if [ "$(gofmt -s -l . | wc -l)" -gt 0 ]; then
-            echo "The following files are not formatted:"
-            gofmt -s -l .
-            exit 1
-          fi
-
-      - name: Run vet
-        run: go vet ./...
-
-      - name: Run tests
-        run: go test -race -v ./...
-
-      - name: Build all packages
-        run: go build ./...
+      # Same as local: `make build` (fmt-check, mod-verify, vet, test, go build).
+      # AP_TEST_DATABASE_URL is set above; Makefile/CI use go test -p 1 for DB isolation.
+      - name: make build
+        run: make build
 
   docker-build-test:
     name: Test Docker Build (${{ matrix.target }})

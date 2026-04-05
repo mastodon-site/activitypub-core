@@ -530,10 +530,11 @@ func TestIntegration_inboundAccept_updatesPendingRemote(t *testing.T) {
 	}
 
 	acceptAct := "https://remoteacc.test/act/accept-1"
+	aliceProfile := cfg.LocalActorProfileURL("alice")
 	raw, err := json.Marshal(map[string]any{
 		"type":   "Accept",
 		"id":     acceptAct,
-		"actor":  remoteURL,
+		"actor":  aliceProfile,
 		"object": followAct,
 	})
 	if err != nil {
@@ -541,7 +542,7 @@ func TestIntegration_inboundAccept_updatesPendingRemote(t *testing.T) {
 	}
 	var actDBID int64
 	if err := pool.QueryRow(ctx, `INSERT INTO activities (activity_id, actor_id, type, raw_json) VALUES ($1,$2,'Accept',$3) RETURNING id`,
-		acceptAct, rid, raw).Scan(&actDBID); err != nil {
+		acceptAct, aliceID, raw).Scan(&actDBID); err != nil {
 		t.Fatal(err)
 	}
 	if err := inboxproc.ProcessInboxActivity(ctx, pool, rec, cfg, http.DefaultClient, actDBID, fetch.TestingPolicy()); err != nil {
@@ -764,8 +765,8 @@ func TestSecurity_inboundAccept_wrongActorCannotAcceptOthersFollow(t *testing.T)
 		acceptAct, attackerRID, raw).Scan(&actDBID); err != nil {
 		t.Fatal(err)
 	}
-	if err := inboxproc.ProcessInboxActivity(ctx, pool, rec, cfg, http.DefaultClient, actDBID, fetch.TestingPolicy()); err != nil {
-		t.Fatal(err)
+	if err := inboxproc.ProcessInboxActivity(ctx, pool, rec, cfg, http.DefaultClient, actDBID, fetch.TestingPolicy()); err == nil {
+		t.Fatal("expected error: Accept actor is not the followee for this follow")
 	}
 	stFollow, err := store.GetFollowState(ctx, pool, victimRID, aliceID)
 	if err != nil {
@@ -834,8 +835,8 @@ func TestSecurity_inboundReject_wrongActorCannotRejectOthersFollow(t *testing.T)
 		rejectAct, attackerRID, raw).Scan(&actDBID); err != nil {
 		t.Fatal(err)
 	}
-	if err := inboxproc.ProcessInboxActivity(ctx, pool, rec, cfg, http.DefaultClient, actDBID, fetch.TestingPolicy()); err != nil {
-		t.Fatal(err)
+	if err := inboxproc.ProcessInboxActivity(ctx, pool, rec, cfg, http.DefaultClient, actDBID, fetch.TestingPolicy()); err == nil {
+		t.Fatal("expected error: Reject actor is not the followee for this follow")
 	}
 	stFollow, err := store.GetFollowState(ctx, pool, victimRID, aliceID)
 	if err != nil {
