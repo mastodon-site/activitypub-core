@@ -159,4 +159,3 @@ func workerLoop(ctx context.Context, id int, q queue.Backend, cfg *config.Config
 		}
 	}
 }
-
