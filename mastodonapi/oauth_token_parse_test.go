@@ -1,7 +1,9 @@
 package mastodonapi
 
 import (
+	"bytes"
 	"encoding/json"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -157,16 +159,91 @@ func TestParseOAuthTokenParams_invalidJSON(t *testing.T) {
 	}
 }
 
-func TestParseOAuthTokenParams_plainTextContentTypeDoesNotParseJSON(t *testing.T) {
+func TestParseOAuthTokenParams_formContentTypeWithJSONBody(t *testing.T) {
 	t.Parallel()
-	raw := `{"grant_type":"authorization_code","code":"x","client_id":"a","redirect_uri":"https://r"}`
+	// Some native clients POST JSON but declare application/x-www-form-urlencoded.
+	raw := `{"grant_type":"authorization_code","code":"c1","client_id":"a","client_secret":"sec","redirect_uri":"https://r"}`
+	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(raw))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	vals, err := parseOAuthTokenParams(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vals.Get("grant_type") != "authorization_code" || vals.Get("code") != "c1" {
+		t.Fatalf("%+v", vals)
+	}
+}
+
+func TestParseOAuthTokenParams_sniffJSONWhenContentTypeOmitted(t *testing.T) {
+	t.Parallel()
+	raw := `{"grant_type":"authorization_code","code":"x","client_id":"a","client_secret":"b","redirect_uri":"https://r"}`
+	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(raw))
+	vals, err := parseOAuthTokenParams(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vals.Get("grant_type") != "authorization_code" || vals.Get("code") != "x" {
+		t.Fatalf("%+v", vals)
+	}
+}
+
+func TestParseOAuthTokenParams_sniffJSONWithTextPlainContentType(t *testing.T) {
+	t.Parallel()
+	raw := `{"grant_type":"client_credentials","client_id":"a","client_secret":"b","redirect_uri":"https://r"}`
 	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(raw))
 	req.Header.Set("Content-Type", "text/plain")
 	vals, err := parseOAuthTokenParams(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if vals.Get("grant_type") != "" || vals.Get("code") != "" {
-		t.Fatalf("must not treat body as JSON without application/json CT: %+v", vals)
+	if vals.Get("grant_type") != "client_credentials" {
+		t.Fatal(vals.Get("grant_type"))
+	}
+}
+
+func TestParseOAuthTokenParams_UTF8BOMPrefix(t *testing.T) {
+	t.Parallel()
+	raw := "\ufeff" + `{"grant_type":"authorization_code","code":"z"}`
+	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	vals, err := parseOAuthTokenParams(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vals.Get("code") != "z" {
+		t.Fatal(vals.Get("code"))
+	}
+}
+
+func TestParseOAuthTokenParams_multipartFormData(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	if err := w.WriteField("grant_type", "authorization_code"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteField("code", "code-multipart"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteField("client_id", "cid"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteField("client_secret", "s"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteField("redirect_uri", "https://cb"); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/oauth/token", &buf)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	vals, err := parseOAuthTokenParams(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vals.Get("grant_type") != "authorization_code" || vals.Get("code") != "code-multipart" {
+		t.Fatalf("%+v", vals)
 	}
 }
