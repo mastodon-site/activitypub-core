@@ -1,6 +1,7 @@
 package mastodonapi
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -10,6 +11,7 @@ import (
 	"html/template"
 	"io"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strings"
@@ -148,27 +150,33 @@ func (s *Server) postOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, u.String(), http.StatusFound)
 }
 
-// parseOAuthTokenParams reads RFC 6749 token endpoint parameters from
-// application/x-www-form-urlencoded (via ParseForm), optional application/json
-// bodies (used by some Mastodon clients), and client_secret_basic.
+// parseOAuthTokenParams reads RFC 6749 token endpoint parameters from the POST
+// body (form, JSON, or multipart), query string, and client_secret_basic.
+//
+// Some native clients send JSON with Content-Type application/x-www-form-urlencoded
+// (or omit a JSON Content-Type). url.ParseQuery on a JSON payload yields no
+// grant_type and breaks login with invalid_request — so we sniff JSON objects
+// and fall back from mislabeled form bodies.
 func parseOAuthTokenParams(r *http.Request) (url.Values, error) {
-	if err := r.ParseForm(); err != nil {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
 		return nil, err
 	}
+	body := bytes.TrimSpace(raw)
+	body = bytes.TrimPrefix(body, []byte{0xef, 0xbb, 0xbf}) // UTF-8 BOM
+
 	vals := make(url.Values)
-	for k, v := range r.Form {
+	for k, v := range r.URL.Query() {
 		vals[k] = append(vals[k], v...)
 	}
-	for k, v := range r.URL.Query() {
-		if vals.Get(k) == "" && len(v) > 0 {
-			vals[k] = append(vals[k], v...)
-		}
-	}
-	ct, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+
+	ct, ctParams, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil {
 		ct = ""
+		ctParams = nil
 	}
-	if vals.Get("grant_type") == "" && ct == "application/json" {
+
+	mergeJSONFields := func(b []byte) error {
 		var payload struct {
 			GrantType    string `json:"grant_type"`
 			Code         string `json:"code"`
@@ -178,9 +186,8 @@ func parseOAuthTokenParams(r *http.Request) (url.Values, error) {
 			CodeVerifier string `json:"code_verifier"`
 			Scope        string `json:"scope"`
 		}
-		dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
-		if err := dec.Decode(&payload); err != nil {
-			return nil, err
+		if err := json.Unmarshal(b, &payload); err != nil {
+			return err
 		}
 		merge := func(key, s string) {
 			s = strings.TrimSpace(s)
@@ -197,7 +204,102 @@ func parseOAuthTokenParams(r *http.Request) (url.Values, error) {
 		merge("redirect_uri", payload.RedirectURI)
 		merge("code_verifier", payload.CodeVerifier)
 		merge("scope", payload.Scope)
+		return nil
 	}
+
+	mergeForm := func(b []byte) error {
+		if len(b) == 0 {
+			return nil
+		}
+		q, err := url.ParseQuery(string(b))
+		if err != nil {
+			return err
+		}
+		for k, v := range q {
+			if vals.Get(k) == "" {
+				vals[k] = append(vals[k], v...)
+			}
+		}
+		return nil
+	}
+
+	mergeMultipart := func(b []byte, boundary string) error {
+		if boundary == "" {
+			return fmt.Errorf("multipart: missing boundary")
+		}
+		mr := multipart.NewReader(bytes.NewReader(b), boundary)
+		for {
+			part, err := mr.NextPart()
+			if err == io.EOF {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			name := part.FormName()
+			if name == "" {
+				_, _ = io.Copy(io.Discard, part)
+				continue
+			}
+			buf, err := io.ReadAll(io.LimitReader(part, 1<<20))
+			if err != nil {
+				return err
+			}
+			if vals.Get(name) == "" {
+				vals.Set(name, string(buf))
+			}
+		}
+	}
+
+	bodyLooksJSONObject := len(body) > 0 && body[0] == '{'
+	jsonCT := ct == "application/json" || strings.HasSuffix(ct, "+json")
+
+	switch {
+	case strings.HasPrefix(ct, "multipart/form-data"):
+		boundary := ctParams["boundary"]
+		if len(body) > 0 {
+			if err := mergeMultipart(body, boundary); err != nil {
+				return nil, err
+			}
+		}
+		if vals.Get("grant_type") == "" && bodyLooksJSONObject {
+			if err := mergeJSONFields(body); err != nil {
+				return nil, err
+			}
+		}
+
+	case jsonCT:
+		if len(body) > 0 {
+			if err := mergeJSONFields(body); err != nil {
+				return nil, err
+			}
+		}
+
+	case strings.HasPrefix(ct, "application/x-www-form-urlencoded"):
+		if len(body) > 0 {
+			if err := mergeForm(body); err != nil {
+				return nil, err
+			}
+		}
+		if vals.Get("grant_type") == "" && bodyLooksJSONObject {
+			if err := mergeJSONFields(body); err != nil {
+				return nil, err
+			}
+		}
+
+	default:
+		if len(body) == 0 {
+			break
+		}
+		if bodyLooksJSONObject {
+			if err := mergeJSONFields(body); err != nil {
+				return nil, err
+			}
+		} else if err := mergeForm(body); err != nil {
+			return nil, err
+		}
+	}
+
 	if cid, secret, ok := r.BasicAuth(); ok {
 		if vals.Get("client_id") == "" {
 			vals.Set("client_id", cid)
