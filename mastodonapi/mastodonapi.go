@@ -101,36 +101,29 @@ func (s *Server) bearer(next func(http.ResponseWriter, *http.Request, int64)) ht
 	}
 }
 
-type appsAppJSON struct {
-	ClientName   string `json:"client_name"`
-	RedirectURIs string `json:"redirect_uris"`
-	Scopes       string `json:"scopes"`
-	Website      string `json:"website"`
-}
-
 func (s *Server) postApps(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	var raw appsAppJSON
-	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<16)).Decode(&raw); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid json")
+	name, redirectURIs, scopes, website, err := decodeAppsRegistrationRequest(r)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if strings.TrimSpace(raw.RedirectURIs) == "" {
+	if strings.TrimSpace(redirectURIs) == "" {
 		writeAPIError(w, http.StatusBadRequest, "redirect_uris required")
 		return
 	}
-	if raw.Scopes == "" {
-		raw.Scopes = "read write"
+	if scopes == "" {
+		scopes = "read write"
 	}
-	app, err := store.InsertOAuthApplication(r.Context(), s.Pool, raw.ClientName, raw.RedirectURIs, raw.Website, raw.Scopes)
+	app, err := store.InsertOAuthApplication(r.Context(), s.Pool, name, redirectURIs, website, scopes)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "could not create app")
 		return
 	}
-	redirectFirst := strings.TrimSpace(raw.RedirectURIs)
+	redirectFirst := strings.TrimSpace(redirectURIs)
 	if parts := strings.Fields(strings.ReplaceAll(redirectFirst, "\n", " ")); len(parts) > 0 {
 		redirectFirst = parts[0]
 	}
@@ -139,7 +132,7 @@ func (s *Server) postApps(w http.ResponseWriter, r *http.Request) {
 		"name":          app.ClientName,
 		"website":       app.Website,
 		"redirect_uri":  redirectFirst,
-		"redirect_uris": strings.TrimSpace(raw.RedirectURIs),
+		"redirect_uris": strings.TrimSpace(redirectURIs),
 		"client_id":     app.ClientID,
 		"client_secret": app.ClientSecret,
 		"vapid_key":     "",
