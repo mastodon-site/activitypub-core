@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -156,13 +157,34 @@ func InsertAccessTokenTx(ctx context.Context, tx pgx.Tx, appID, actorID int64, s
 	return rawToken, nil
 }
 
-// ActorIDForAccessToken resolves bearer token to local actor id (or 0).
+// ActorIDForAccessToken resolves bearer token to local actor id (or 0 for app-only tokens).
 func ActorIDForAccessToken(ctx context.Context, pool *pgxpool.Pool, rawToken string) (actorID int64, appID int64, scopes string, err error) {
 	th := hashSecret(rawToken)
+	var actor sql.NullInt64
 	err = pool.QueryRow(ctx, `
 		SELECT actor_id, application_id, scopes FROM oauth_access_tokens WHERE token_hash = $1
-	`, th).Scan(&actorID, &appID, &scopes)
-	return actorID, appID, scopes, err
+	`, th).Scan(&actor, &appID, &scopes)
+	if err != nil {
+		return 0, 0, "", err
+	}
+	if actor.Valid {
+		actorID = actor.Int64
+	}
+	return actorID, appID, scopes, nil
+}
+
+// InsertAppAccessTokenTx creates an application-level token (no user actor), e.g. client_credentials.
+func InsertAppAccessTokenTx(ctx context.Context, tx pgx.Tx, appID int64, scopes string) (rawToken string, err error) {
+	rawToken = randomTokenURL(32)
+	th := hashSecret(rawToken)
+	_, err = tx.Exec(ctx, `
+		INSERT INTO oauth_access_tokens (token_hash, application_id, actor_id, scopes)
+		VALUES ($1, $2, NULL, $3)
+	`, th, appID, scopes)
+	if err != nil {
+		return "", err
+	}
+	return rawToken, nil
 }
 
 func randomTokenURL(nBytes int) string {

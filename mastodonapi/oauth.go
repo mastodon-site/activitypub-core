@@ -9,6 +9,7 @@ import (
 	"html"
 	"html/template"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
@@ -147,24 +148,116 @@ func (s *Server) postOAuthAuthorize(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, u.String(), http.StatusFound)
 }
 
+// parseOAuthTokenParams reads RFC 6749 token endpoint parameters from
+// application/x-www-form-urlencoded (via ParseForm), optional application/json
+// bodies (used by some Mastodon clients), and client_secret_basic.
+func parseOAuthTokenParams(r *http.Request) (url.Values, error) {
+	if err := r.ParseForm(); err != nil {
+		return nil, err
+	}
+	vals := make(url.Values)
+	for k, v := range r.Form {
+		vals[k] = append(vals[k], v...)
+	}
+	for k, v := range r.URL.Query() {
+		if vals.Get(k) == "" && len(v) > 0 {
+			vals[k] = append(vals[k], v...)
+		}
+	}
+	ct, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil {
+		ct = ""
+	}
+	if vals.Get("grant_type") == "" && ct == "application/json" {
+		var payload struct {
+			GrantType    string `json:"grant_type"`
+			Code         string `json:"code"`
+			ClientID     string `json:"client_id"`
+			ClientSecret string `json:"client_secret"`
+			RedirectURI  string `json:"redirect_uri"`
+			CodeVerifier string `json:"code_verifier"`
+			Scope        string `json:"scope"`
+		}
+		dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+		if err := dec.Decode(&payload); err != nil {
+			return nil, err
+		}
+		merge := func(key, s string) {
+			s = strings.TrimSpace(s)
+			if s != "" && vals.Get(key) == "" {
+				vals.Set(key, s)
+			}
+		}
+		merge("grant_type", payload.GrantType)
+		merge("code", payload.Code)
+		merge("client_id", payload.ClientID)
+		if strings.TrimSpace(payload.ClientSecret) != "" && vals.Get("client_secret") == "" {
+			vals.Set("client_secret", strings.TrimSpace(payload.ClientSecret))
+		}
+		merge("redirect_uri", payload.RedirectURI)
+		merge("code_verifier", payload.CodeVerifier)
+		merge("scope", payload.Scope)
+	}
+	if cid, secret, ok := r.BasicAuth(); ok {
+		if vals.Get("client_id") == "" {
+			vals.Set("client_id", cid)
+		}
+		if vals.Get("client_secret") == "" {
+			vals.Set("client_secret", secret)
+		}
+	}
+	return vals, nil
+}
+
+func oauthScopesSubset(requested, allowed string) bool {
+	req := strings.Fields(strings.ReplaceAll(strings.TrimSpace(requested), "+", " "))
+	if len(req) == 0 {
+		return true
+	}
+	allow := strings.Fields(strings.ReplaceAll(strings.TrimSpace(allowed), "+", " "))
+	set := make(map[string]struct{}, len(allow))
+	for _, s := range allow {
+		set[s] = struct{}{}
+	}
+	for _, s := range req {
+		if _, ok := set[s]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) postOAuthToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		oauthTokenError(w, http.StatusMethodNotAllowed, "invalid_request", "method not allowed")
 		return
 	}
-	if err := r.ParseForm(); err != nil {
-		oauthTokenError(w, http.StatusBadRequest, "invalid_request", "invalid form body")
+	vals, err := parseOAuthTokenParams(r)
+	if err != nil {
+		oauthTokenError(w, http.StatusBadRequest, "invalid_request", "invalid request body")
 		return
 	}
-	if r.FormValue("grant_type") != "authorization_code" {
-		oauthTokenError(w, http.StatusBadRequest, "unsupported_grant_type", "only authorization_code is supported")
+	grantType := strings.TrimSpace(vals.Get("grant_type"))
+	if grantType == "" {
+		oauthTokenError(w, http.StatusBadRequest, "invalid_request", "grant_type is required")
 		return
 	}
-	code := r.FormValue("code")
-	clientID := r.FormValue("client_id")
-	clientSecret := r.FormValue("client_secret")
-	redirectURI := r.FormValue("redirect_uri")
-	verifier := r.FormValue("code_verifier")
+	switch strings.ToLower(grantType) {
+	case "authorization_code":
+		s.postOAuthTokenAuthorizationCode(w, r, vals)
+	case "client_credentials":
+		s.postOAuthTokenClientCredentials(w, r, vals)
+	default:
+		oauthTokenError(w, http.StatusBadRequest, "unsupported_grant_type", "grant type is not supported")
+	}
+}
+
+func (s *Server) postOAuthTokenAuthorizationCode(w http.ResponseWriter, r *http.Request, vals url.Values) {
+	code := strings.TrimSpace(vals.Get("code"))
+	clientID := strings.TrimSpace(vals.Get("client_id"))
+	clientSecret := vals.Get("client_secret")
+	redirectURI := strings.TrimSpace(vals.Get("redirect_uri"))
+	verifier := strings.TrimSpace(vals.Get("code_verifier"))
 	if code == "" || clientID == "" || redirectURI == "" {
 		oauthTokenError(w, http.StatusBadRequest, "invalid_request", "code, client_id, and redirect_uri are required")
 		return
@@ -209,12 +302,64 @@ func (s *Server) postOAuthToken(w http.ResponseWriter, r *http.Request) {
 		oauthTokenError(w, http.StatusInternalServerError, "server_error", "could not commit transaction")
 		return
 	}
+	writeOAuthTokenOK(w, rawTok, row.Scopes)
+}
+
+func (s *Server) postOAuthTokenClientCredentials(w http.ResponseWriter, r *http.Request, vals url.Values) {
+	clientID := strings.TrimSpace(vals.Get("client_id"))
+	clientSecret := vals.Get("client_secret")
+	redirectURI := strings.TrimSpace(vals.Get("redirect_uri"))
+	scopeReq := strings.TrimSpace(vals.Get("scope"))
+	if clientID == "" || redirectURI == "" {
+		oauthTokenError(w, http.StatusBadRequest, "invalid_request", "client_id, client_secret, and redirect_uri are required")
+		return
+	}
+	app, err := store.OAuthApplicationByClientID(r.Context(), s.Pool, clientID)
+	if err != nil {
+		oauthTokenError(w, http.StatusUnauthorized, "invalid_client", "unknown client_id")
+		return
+	}
+	if !store.VerifyClientSecret(app, clientSecret) {
+		oauthTokenError(w, http.StatusUnauthorized, "invalid_client", "invalid client_secret")
+		return
+	}
+	if !store.RedirectURIAllowed(app.RedirectURIs, redirectURI) {
+		oauthTokenError(w, http.StatusBadRequest, "invalid_request", "invalid redirect_uri")
+		return
+	}
+	if scopeReq == "" {
+		scopeReq = "read"
+	}
+	if !oauthScopesSubset(scopeReq, app.Scopes) {
+		oauthTokenError(w, http.StatusBadRequest, "invalid_scope", "The requested scope is invalid, unknown, or malformed.")
+		return
+	}
+	ctx := r.Context()
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		oauthTokenError(w, http.StatusInternalServerError, "server_error", "could not begin transaction")
+		return
+	}
+	defer tx.Rollback(ctx)
+	rawTok, err := store.InsertAppAccessTokenTx(ctx, tx, app.ID, scopeReq)
+	if err != nil {
+		oauthTokenError(w, http.StatusInternalServerError, "server_error", "could not create access token")
+		return
+	}
+	if err := tx.Commit(ctx); err != nil {
+		oauthTokenError(w, http.StatusInternalServerError, "server_error", "could not commit transaction")
+		return
+	}
+	writeOAuthTokenOK(w, rawTok, scopeReq)
+}
+
+func writeOAuthTokenOK(w http.ResponseWriter, rawTok, scopes string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"access_token": rawTok,
 		"token_type":   "Bearer",
-		"scope":        row.Scopes,
+		"scope":        scopes,
 		"created_at":   time.Now().Unix(),
 	})
 }

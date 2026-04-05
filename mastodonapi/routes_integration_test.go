@@ -266,3 +266,241 @@ func TestIntegration_MastodonRoutes_withDatabase(t *testing.T) {
 		}
 	})
 }
+
+func TestIntegration_OAuthToken_flows(t *testing.T) {
+	ctx := context.Background()
+	dsn := testDatabaseURL(t)
+	if err := migrate.Up(dsn, findMigrationsDir(t)); err != nil {
+		t.Fatal(err)
+	}
+	st, err := postgres.NewPool(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Pool.Close()
+	truncateMastodonTestDB(t, st.Pool)
+
+	cfg := &config.Config{PublicBaseURL: "https://oauth-int.test", LocalUsername: "alice", LocalUsernames: []string{"alice"}}
+	h, err := aphttp.New(cfg, aphttp.Deps{Store: st})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	srv := &Server{H: h, Pool: st.Pool}
+	srv.mountMastodon(mux)
+
+	actorID, ok := h.LocalActorID("alice")
+	if !ok || actorID < 1 {
+		t.Fatalf("local actor: id=%d ok=%v", actorID, ok)
+	}
+
+	app, err := store.InsertOAuthApplication(ctx, st.Pool, "ivorylike", "https://app.example/oauth", "", "read write follow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	redirect := "https://app.example/oauth"
+
+	mustCode := func() string {
+		t.Helper()
+		c, err := store.InsertAuthorizationCode(ctx, st.Pool, app.ID, actorID, redirect, "read write", "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+
+	t.Run("authorization_code_json_body", func(t *testing.T) {
+		payload := map[string]string{
+			"grant_type":    "authorization_code",
+			"code":          mustCode(),
+			"client_id":     app.ClientID,
+			"client_secret": app.ClientSecret,
+			"redirect_uri":  redirect,
+		}
+		body, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(string(body)))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%d %s", rec.Code, rec.Body.String())
+		}
+		var tok map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &tok); err != nil {
+			t.Fatal(err)
+		}
+		if fmt.Sprint(tok["access_token"]) == "" {
+			t.Fatal(tok)
+		}
+	})
+
+	t.Run("authorization_code_form", func(t *testing.T) {
+		v := url.Values{}
+		v.Set("grant_type", "authorization_code")
+		v.Set("code", mustCode())
+		v.Set("client_id", app.ClientID)
+		v.Set("client_secret", app.ClientSecret)
+		v.Set("redirect_uri", redirect)
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(v.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%d %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("authorization_code_basic_auth", func(t *testing.T) {
+		v := url.Values{}
+		v.Set("grant_type", "authorization_code")
+		v.Set("code", mustCode())
+		v.Set("redirect_uri", redirect)
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(v.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.SetBasicAuth(app.ClientID, app.ClientSecret)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%d %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("grant_type_case_insensitive", func(t *testing.T) {
+		v := url.Values{}
+		v.Set("grant_type", "Authorization_Code")
+		v.Set("code", mustCode())
+		v.Set("client_id", app.ClientID)
+		v.Set("client_secret", app.ClientSecret)
+		v.Set("redirect_uri", redirect)
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(v.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%d %s", rec.Code, rec.Body.String())
+		}
+	})
+
+	t.Run("client_credentials_json", func(t *testing.T) {
+		payload := map[string]string{
+			"grant_type":    "client_credentials",
+			"client_id":     app.ClientID,
+			"client_secret": app.ClientSecret,
+			"redirect_uri":  redirect,
+			"scope":         "read",
+		}
+		body, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(string(body)))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%d %s", rec.Code, rec.Body.String())
+		}
+		var tok map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &tok); err != nil {
+			t.Fatal(err)
+		}
+		rawTok, _ := tok["access_token"].(string)
+		if rawTok == "" {
+			t.Fatal(tok)
+		}
+		aid, _, _, err := store.ActorIDForAccessToken(ctx, st.Pool, rawTok)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if aid != 0 {
+			t.Fatalf("client_credentials token should not be bound to a user actor (got id %d)", aid)
+		}
+	})
+
+	t.Run("client_credentials_default_scope_read", func(t *testing.T) {
+		payload := map[string]string{
+			"grant_type":    "client_credentials",
+			"client_id":     app.ClientID,
+			"client_secret": app.ClientSecret,
+			"redirect_uri":  redirect,
+		}
+		body, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(string(body)))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%d %s", rec.Code, rec.Body.String())
+		}
+		var tok map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &tok); err != nil {
+			t.Fatal(err)
+		}
+		if fmt.Sprint(tok["scope"]) != "read" {
+			t.Fatalf("scope: %#v", tok["scope"])
+		}
+	})
+
+	t.Run("unsupported_grant_refresh_token", func(t *testing.T) {
+		body := `{"grant_type":"refresh_token","refresh_token":"x"}`
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%d %s", rec.Code, rec.Body.String())
+		}
+		var errDoc map[string]string
+		if err := json.Unmarshal(rec.Body.Bytes(), &errDoc); err != nil {
+			t.Fatal(err)
+		}
+		if errDoc["error"] != "unsupported_grant_type" {
+			t.Fatal(errDoc)
+		}
+	})
+
+	t.Run("client_credentials_invalid_scope", func(t *testing.T) {
+		payload := map[string]string{
+			"grant_type":    "client_credentials",
+			"client_id":     app.ClientID,
+			"client_secret": app.ClientSecret,
+			"redirect_uri":  redirect,
+			"scope":         "admin:read",
+		}
+		body, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(string(body)))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%d %s", rec.Code, rec.Body.String())
+		}
+		var errDoc map[string]string
+		if err := json.Unmarshal(rec.Body.Bytes(), &errDoc); err != nil {
+			t.Fatal(err)
+		}
+		if errDoc["error"] != "invalid_scope" {
+			t.Fatal(errDoc)
+		}
+	})
+
+	t.Run("json_missing_grant_type", func(t *testing.T) {
+		body := `{"code":"x","client_id":"a","redirect_uri":"` + redirect + `"}`
+		req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%d %s", rec.Code, rec.Body.String())
+		}
+	})
+}
