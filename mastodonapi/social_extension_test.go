@@ -12,9 +12,11 @@ import (
 
 	"github.com/mastodon-site/activitypub-core/aphttp"
 	"github.com/mastodon-site/activitypub-core/internal/config"
+	"github.com/mastodon-site/activitypub-core/internal/fetch"
 	"github.com/mastodon-site/activitypub-core/internal/inboxproc"
 	"github.com/mastodon-site/activitypub-core/migrate"
 	"github.com/mastodon-site/activitypub-core/queue"
+	"github.com/mastodon-site/activitypub-core/queue/sqlqueue"
 	"github.com/mastodon-site/activitypub-core/store"
 	"github.com/mastodon-site/activitypub-core/store/postgres"
 )
@@ -293,7 +295,15 @@ func TestIntegration_Social_localFavouritesRemoteNote(t *testing.T) {
 		LocalUsername:  "alice",
 		LocalUsernames: []string{"alice"},
 	}
-	h, err := aphttp.New(cfg, mastodonIntegrationAPHTTPDeps(cfg, st))
+	const remoteSamActor = "https://fed.remote/users/sam"
+	const remoteSamInbox = "https://fed.remote/inbox/sam"
+	deps := aphttp.Deps{
+		Store:       st,
+		Queue:       sqlqueue.New(st.Pool),
+		FetchPolicy: fetch.TestingPolicy(),
+		FetchClient: mastodonIntegrationStubFetchClientWithRemote(cfg.PublicBaseURL, remoteSamActor, remoteSamInbox),
+	}
+	h, err := aphttp.New(cfg, deps)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +314,7 @@ func TestIntegration_Social_localFavouritesRemoteNote(t *testing.T) {
 	if !ok || aliceID < 1 {
 		t.Fatalf("alice id=%d", aliceID)
 	}
-	remoteID, err := store.EnsureRemoteActor(ctx, st.Pool, "https://fed.remote/users/sam", "pem")
+	remoteID, err := store.EnsureRemoteActor(ctx, st.Pool, remoteSamActor, "pem")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +322,7 @@ func TestIntegration_Social_localFavouritesRemoteNote(t *testing.T) {
 	note := map[string]any{
 		"id":           "https://fed.remote/obj/note-x",
 		"type":         "Note",
-		"attributedTo": "https://fed.remote/users/sam",
+		"attributedTo": remoteSamActor,
 		"content":      "remote hello",
 	}
 	noteRaw, err := json.Marshal(note)
@@ -323,7 +333,7 @@ func TestIntegration_Social_localFavouritesRemoteNote(t *testing.T) {
 		"@context": "https://www.w3.org/ns/activitystreams",
 		"id":       "https://fed.remote/act/cr-x",
 		"type":     "Create",
-		"actor":    "https://fed.remote/users/sam",
+		"actor":    remoteSamActor,
 		"to":       []string{cfg.LocalActorProfileURL("alice")},
 		"object":   json.RawMessage(noteRaw),
 	}
