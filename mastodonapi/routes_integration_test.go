@@ -137,6 +137,7 @@ func truncateMastodonTestDB(t *testing.T, pool *pgxpool.Pool) {
 			queue_jobs,
 			deliveries,
 			follows,
+			status_bookmarks,
 			federated_likes,
 			federated_announces,
 			federated_blocks,

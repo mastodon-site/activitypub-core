@@ -34,7 +34,7 @@ func (s *Server) getTimelinePublic(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]any, 0, len(rows))
 	for _, row := range rows {
-		st, ok := s.mastodonStatusFromCreateRow(ctx, row)
+		st, ok := s.mastodonStatusPresentation(ctx, row, 0)
 		if ok {
 			out = append(out, st)
 		}

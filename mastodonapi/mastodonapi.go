@@ -170,8 +170,9 @@ func (s *Server) getVerifyCredentials(w http.ResponseWriter, r *http.Request, ac
 }
 
 type statusCreateJSON struct {
-	Status     string `json:"status"`
-	Visibility string `json:"visibility"`
+	Status         string `json:"status"`
+	Visibility     string `json:"visibility"`
+	QuotedStatusID *int64 `json:"quoted_status_id,omitempty"`
 }
 
 func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID int64) {
@@ -190,6 +191,7 @@ func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID in
 	}
 	ct := r.Header.Get("Content-Type")
 	var text string
+	var quotedStatusID *int64
 	if strings.Contains(strings.ToLower(ct), "application/json") {
 		var body statusCreateJSON
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
@@ -197,12 +199,19 @@ func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID in
 			return
 		}
 		text = body.Status
+		quotedStatusID = body.QuotedStatusID
 	} else {
 		if err := r.ParseForm(); err != nil {
 			writeAPIError(w, http.StatusBadRequest, "invalid form")
 			return
 		}
 		text = r.FormValue("status")
+		if q := strings.TrimSpace(r.FormValue("quoted_status_id")); q != "" {
+			n, err := strconv.ParseInt(q, 10, 64)
+			if err == nil && n > 0 {
+				quotedStatusID = &n
+			}
+		}
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -221,6 +230,22 @@ func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID in
 		"content":      "<p>" + htmlEscapeBasic(text) + "</p>",
 		"to":           []string{"https://www.w3.org/ns/activitystreams#Public"},
 		"cc":           []string{followers},
+	}
+	if quotedStatusID != nil && *quotedStatusID > 0 {
+		qrow, err := store.GetActivityByID(r.Context(), s.Pool, *quotedStatusID)
+		if err != nil || qrow == nil || !strings.EqualFold(strings.TrimSpace(qrow.Type), "create") {
+			writeAPIError(w, http.StatusNotFound, "Record not found")
+			return
+		}
+		qres, ok := resolveCreateStatusRow(qrow)
+		if !ok {
+			writeAPIError(w, http.StatusNotFound, "Record not found")
+			return
+		}
+		note[quotedStatusActivityKey] = float64(*quotedStatusID)
+		note["quoteUri"] = qres.NoteIRI
+		extra := "<p><span class=\"quote-inline\"><a href=\"" + htmlEscapeBasic(qres.NoteIRI) + "\">[" + strconv.FormatInt(*quotedStatusID, 10) + "]</a></span></p>"
+		note["content"] = note["content"].(string) + extra
 	}
 	create := map[string]any{
 		"@context": []any{"https://www.w3.org/ns/activitystreams"},
@@ -245,32 +270,15 @@ func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID in
 		writeAPIError(w, http.StatusInternalServerError, "could not load posted status")
 		return
 	}
-	// Minimal Status entity (enough for Ivory to treat as success).
-	out := map[string]any{
-		"id":                strconv.FormatInt(statusDBID, 10),
-		"uri":               noteID,
-		"created_at":        time.Now().UTC().Format(time.RFC3339),
-		"content":           note["content"],
-		"visibility":        "public",
-		"language":          "en",
-		"url":               noteID,
-		"replies_count":     0,
-		"reblogs_count":     0,
-		"favourites_count":  0,
-		"favourited":        false,
-		"reblogged":         false,
-		"sensitive":         false,
-		"spoiler_text":      "",
-		"muted":             false,
-		"pinned":            false,
-		"bookmarked":        false,
-		"account":           nil,
-		"media_attachments": []any{},
-		"mentions":          []any{},
-		"tags":              []any{},
-		"emojis":            []any{},
-		"card":              nil,
-		"poll":              nil,
+	row, err := store.GetActivityByID(r.Context(), s.Pool, statusDBID)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "could not load posted status")
+		return
+	}
+	out, ok := s.mastodonStatusPresentation(r.Context(), *row, actorID)
+	if !ok {
+		writeAPIError(w, http.StatusInternalServerError, "could not build status")
+		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -307,7 +315,7 @@ func (s *Server) getTimelineHome(w http.ResponseWriter, r *http.Request, actorID
 	}
 	out := make([]any, 0, len(rows))
 	for _, row := range rows {
-		st, ok := s.mastodonStatusFromCreateRow(ctx, row)
+		st, ok := s.mastodonStatusPresentation(ctx, row, actorID)
 		if ok {
 			out = append(out, st)
 		}

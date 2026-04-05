@@ -137,7 +137,7 @@ func (s *Server) getStatus(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusNotFound, "Record not found")
 		return
 	}
-	st, ok := s.mastodonStatusFromCreateRow(r.Context(), *row)
+	st, ok := s.mastodonStatusPresentation(r.Context(), *row, 0)
 	if !ok {
 		writeAPIError(w, http.StatusNotFound, "Record not found")
 		return
