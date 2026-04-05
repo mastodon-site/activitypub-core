@@ -6,7 +6,8 @@ import (
 	"strings"
 )
 
-const mastodonCompatibleVersion = "4.2.0+activitypub-core"
+// mastodonCompatibleVersion is reported to clients via /api/v1|v2/instance (Mastodon 4.x API target).
+const mastodonCompatibleVersion = "4.3.0+activitypub-core"
 
 func (s *Server) instanceV1Payload() map[string]any {
 	host := s.instanceHost()
@@ -120,7 +121,7 @@ func (s *Server) instanceV2Payload() map[string]any {
 			"url":               nil,
 		},
 		"api_versions": map[string]any{
-			"mastodon": 2,
+			"mastodon": 1,
 		},
 		"contact": map[string]any{
 			"email":   "",

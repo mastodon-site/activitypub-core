@@ -33,28 +33,7 @@ func Mount(mux *http.ServeMux, h *aphttp.Handler, pool *pgxpool.Pool) {
 		return
 	}
 	s := &Server{H: h, Pool: pool}
-
-	// Instance & discovery (Mastodon 3.x / 4.x clients probe v1 and v2).
-	mux.HandleFunc("GET /api/v1/instance", s.getInstance)
-	mux.HandleFunc("GET /api/v2/instance", s.getInstanceV2)
-	mux.HandleFunc("GET /api/v1/instance/extended_description", s.getInstanceExtendedDescription)
-	mux.HandleFunc("GET /.well-known/oauth-authorization-server", s.getOAuthAuthorizationServer)
-
-	mux.HandleFunc("POST /api/v1/apps", s.postApps)
-	mux.HandleFunc("GET /api/v1/custom_emojis", s.getCustomEmojis)
-	mux.HandleFunc("GET /api/v1/announcements", s.getAnnouncements)
-	mux.HandleFunc("GET /api/v1/preferences", s.bearer(s.getPreferences))
-
-	mux.HandleFunc("GET /api/v1/accounts/verify_credentials", s.bearer(s.getVerifyCredentials))
-	mux.HandleFunc("POST /api/v1/statuses", s.bearer(s.postStatuses))
-	mux.HandleFunc("GET /api/v1/accounts/search", s.getAccountSearch)
-	mux.HandleFunc("POST /api/v1/accounts/{id}/follow", s.bearer(s.postAccountFollow))
-	mux.HandleFunc("GET /api/v1/timelines/home", s.bearer(s.getTimelineHome))
-	mux.HandleFunc("GET /api/v1/timelines/public", s.getTimelinePublic)
-
-	mux.HandleFunc("GET /oauth/authorize", s.getOAuthAuthorize)
-	mux.HandleFunc("POST /oauth/authorize", s.postOAuthAuthorize)
-	mux.HandleFunc("POST /oauth/token", s.postOAuthToken)
+	s.mountMastodon(mux)
 }
 
 func (s *Server) cfg() *config.Config { return s.H.Config() }

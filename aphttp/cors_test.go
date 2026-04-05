@@ -27,7 +27,7 @@ func TestWithCORS_disabledWhenEmpty(t *testing.T) {
 	}
 }
 
-func TestWithCORS_wildcard(t *testing.T) {
+func TestWithCORS_wildcardAPIReflectsOrigin(t *testing.T) {
 	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
@@ -39,6 +39,23 @@ func TestWithCORS_wildcard(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("code %d", rr.Code)
 	}
+	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "https://client.example" {
+		t.Fatalf("Allow-Origin %q, want request Origin echoed for /api", got)
+	}
+	if rr.Header().Get("Access-Control-Allow-Credentials") != "true" {
+		t.Fatal("credentials required for credentialed browser clients when Origin is set")
+	}
+}
+
+func TestWithCORS_wildcardNonAPIUsesStar(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	h := WithCORS([]string{"*"}, inner)
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/webfinger", nil)
+	req.Header.Set("Origin", "https://client.example")
+	rr := httptest.NewRecorder()
+	h.ServeHTTP(rr, req)
 	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "*" {
 		t.Fatalf("Allow-Origin %q", got)
 	}
