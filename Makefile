@@ -2,7 +2,8 @@
 # Docker images: make docker
 #
 # test uses -p 1 so packages with AP_TEST_DATABASE_URL integration tests do not
-# hit the same Postgres concurrently (matches CI).
+# hit the same Postgres concurrently (matches CI). Mastodon/AP integration tests
+# use Postgres for persistence and the SQL job queue (queue_jobs) like production.
 
 .PHONY: default build test vet fmt-check fmt mod-verify docker apd-image apw-image
 

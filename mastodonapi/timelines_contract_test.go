@@ -34,3 +34,18 @@ func TestContract_getTimelinePublic_returnsJSONArray(t *testing.T) {
 		t.Fatal("want non-nil empty slice encoded as []")
 	}
 }
+
+func TestContract_getTimelinePublic_methodNotAllowed(t *testing.T) {
+	cfg := &config.Config{PublicBaseURL: "https://inst.test", LocalUsername: "x"}
+	h, err := aphttp.New(cfg, aphttp.Deps{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{H: h, Pool: nil}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/timelines/public", nil)
+	rr := httptest.NewRecorder()
+	s.getTimelinePublic(rr, req)
+	if rr.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("got %d %s", rr.Code, rr.Body.String())
+	}
+}

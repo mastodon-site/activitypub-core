@@ -26,6 +26,9 @@ func PolicyFromConfig(c *config.Config) *Policy {
 	if c == nil {
 		return &Policy{}
 	}
+	if c.FetchRelaxLocal {
+		return TestingPolicy()
+	}
 	return &Policy{
 		AllowHTTP: c.FetchAllowHTTP,
 	}

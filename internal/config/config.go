@@ -39,6 +39,9 @@ type Config struct {
 	// FetchAllowHTTP allows http:// for outbound federation fetches (AP_FETCH_ALLOW_HTTP).
 	// Default false: HTTPS only (recommended on the public internet).
 	FetchAllowHTTP bool
+	// FetchRelaxLocal uses the same SSRF rules as fetch.TestingPolicy (http + loopback/private
+	// targets). Set via AP_FETCH_RELAX_LOCAL or in tests; not for untrusted production instances.
+	FetchRelaxLocal bool
 
 	// OutboxPostSecret, if set, enables POST /@{user}/outbox with Authorization: Bearer <secret>.
 	OutboxPostSecret string
@@ -145,6 +148,9 @@ func Load() (*Config, error) {
 
 	if truthyEnv("AP_FETCH_ALLOW_HTTP") {
 		c.FetchAllowHTTP = true
+	}
+	if truthyEnv("AP_FETCH_RELAX_LOCAL") {
+		c.FetchRelaxLocal = true
 	}
 	if truthyEnv("AP_REQUIRE_AUTHORIZED_FETCH") {
 		c.RequireAuthorizedFetch = true

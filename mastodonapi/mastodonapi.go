@@ -240,9 +240,14 @@ func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID in
 		writeAPIError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	statusDBID, err := store.ActivityIDByActorAndActivityIRI(r.Context(), s.Pool, actorID, actID)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "could not load posted status")
+		return
+	}
 	// Minimal Status entity (enough for Ivory to treat as success).
 	out := map[string]any{
-		"id":                strings.TrimPrefix(noteID, root+"/"),
+		"id":                strconv.FormatInt(statusDBID, 10),
 		"uri":               noteID,
 		"created_at":        time.Now().UTC().Format(time.RFC3339),
 		"content":           note["content"],
@@ -290,8 +295,23 @@ func (s *Server) getTimelineHome(w http.ResponseWriter, r *http.Request, actorID
 		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	_ = actorID
-	out := []any{}
+	if s.Pool == nil {
+		writeAPIError(w, http.StatusInternalServerError, "database not configured")
+		return
+	}
+	ctx := r.Context()
+	rows, err := store.ListRecentCreateActivitiesForActor(ctx, s.Pool, actorID, timelineLimit(r))
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "could not load timeline")
+		return
+	}
+	out := make([]any, 0, len(rows))
+	for _, row := range rows {
+		st, ok := s.mastodonStatusFromCreateRow(ctx, row)
+		if ok {
+			out = append(out, st)
+		}
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(out)
