@@ -335,18 +335,96 @@ func recordOutboxFollowEffects(
 			return nil, err
 		}
 		return nil, nil
-	case strings.EqualFold(t, "Undo"):
-		target, err := as2.ObjectIRI(raw)
+	case strings.EqualFold(t, "Like"):
+		objIRI, err := as2.ObjectIRI(raw)
 		if err != nil {
 			return nil, err
 		}
-		if err := store.DeleteFollowByFollowActivityIDForFollower(ctx, tx, target, localActorID); err != nil {
+		if err := store.UpsertFederatedLike(ctx, tx, localActorID, store.CanonicalActorURL(objIRI), activityID); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	case strings.EqualFold(t, "Announce"):
+		objIRI, err := as2.ObjectIRI(raw)
+		if err != nil {
+			return nil, err
+		}
+		if err := store.UpsertFederatedAnnounce(ctx, tx, localActorID, store.CanonicalActorURL(objIRI), activityID); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	case strings.EqualFold(t, "Undo"):
+		if err := recordOutboxUndoEffects(ctx, tx, localActorID, raw); err != nil {
 			return nil, err
 		}
 		return nil, nil
 	default:
 		return nil, nil
 	}
+}
+
+func recordOutboxUndoEffects(ctx context.Context, tx pgx.Tx, localActorID int64, raw map[string]json.RawMessage) error {
+	target, err := undoObjectTargetIRI(raw)
+	if err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `
+		DELETE FROM follows WHERE follow_activity_id = $1 AND follower_actor_id = $2
+	`, target, localActorID)
+	if err != nil {
+		return fmt.Errorf("undo follow: %w", err)
+	}
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+	tag, err = tx.Exec(ctx, `
+		DELETE FROM federated_likes WHERE like_activity_id = $1 AND actor_id = $2
+	`, target, localActorID)
+	if err != nil {
+		return fmt.Errorf("undo like: %w", err)
+	}
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+	tag, err = tx.Exec(ctx, `
+		DELETE FROM federated_announces WHERE announce_activity_id = $1 AND actor_id = $2
+	`, target, localActorID)
+	if err != nil {
+		return fmt.Errorf("undo announce: %w", err)
+	}
+	if tag.RowsAffected() > 0 {
+		return nil
+	}
+	tag, err = tx.Exec(ctx, `
+		DELETE FROM federated_blocks WHERE block_activity_id = $1 AND blocker_actor_id = $2
+	`, target, localActorID)
+	if err != nil {
+		return fmt.Errorf("undo block: %w", err)
+	}
+	return nil
+}
+
+func undoObjectTargetIRI(raw map[string]json.RawMessage) (string, error) {
+	r, ok := raw["object"]
+	if !ok {
+		return "", fmt.Errorf("undo missing object")
+	}
+	var s string
+	if err := json.Unmarshal(r, &s); err == nil && strings.TrimSpace(s) != "" {
+		return strings.TrimSpace(s), nil
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(r, &obj); err != nil {
+		return "", fmt.Errorf("undo object: %w", err)
+	}
+	idRaw, ok := obj["id"]
+	if !ok {
+		return "", fmt.Errorf("undo object missing id")
+	}
+	if err := json.Unmarshal(idRaw, &s); err != nil || strings.TrimSpace(s) == "" {
+		return "", fmt.Errorf("undo object invalid id")
+	}
+	return strings.TrimSpace(s), nil
 }
 
 func normalizedOutboxActivityType(t string) string {
