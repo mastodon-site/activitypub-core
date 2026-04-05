@@ -18,6 +18,7 @@ import (
 	"github.com/mastodon-site/activitypub-core/internal/config"
 	"github.com/mastodon-site/activitypub-core/internal/fetch"
 	"github.com/mastodon-site/activitypub-core/internal/httpsig"
+	"github.com/mastodon-site/activitypub-core/internal/worker"
 )
 
 func TestDeliverActivity_POSTsValidSignature(t *testing.T) {
@@ -57,19 +58,19 @@ func TestDeliverActivity_POSTsValidSignature(t *testing.T) {
 	}
 	testClient := fetch.NewHTTPClientForPolicy(fetch.TestingPolicy(), 60*time.Second)
 	act := json.RawMessage(`{"type":"Create","id":"https://origin.example/o/1"}`)
-	raw, err := json.Marshal(deliverPayload{InboxURL: inboxSrv.URL, Body: act})
+	raw, err := json.Marshal(map[string]any{"inboxUrl": inboxSrv.URL, "body": act})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := deliverActivity(context.Background(), cfg, nil, testClient, raw); err != nil {
+	if err := worker.DeliverActivity(context.Background(), cfg, nil, testClient, raw); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestDeliverActivity_requiresKeys(t *testing.T) {
 	cfg := &config.Config{PublicBaseURL: "https://x"}
-	raw, _ := json.Marshal(deliverPayload{InboxURL: "http://y", Body: json.RawMessage(`{}`)})
-	if err := deliverActivity(context.Background(), cfg, nil, nil, raw); err == nil {
+	raw, _ := json.Marshal(map[string]any{"inboxUrl": "http://y", "body": json.RawMessage(`{}`)})
+	if err := worker.DeliverActivity(context.Background(), cfg, nil, nil, raw); err == nil {
 		t.Fatal("expected error without private key path")
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -22,7 +23,7 @@ import (
 	"github.com/mastodon-site/activitypub-core/internal/config"
 	"github.com/mastodon-site/activitypub-core/internal/fetch"
 	"github.com/mastodon-site/activitypub-core/migrate"
-	"github.com/mastodon-site/activitypub-core/queue"
+	"github.com/mastodon-site/activitypub-core/queue/sqlqueue"
 	"github.com/mastodon-site/activitypub-core/store"
 	"github.com/mastodon-site/activitypub-core/store/postgres"
 )
@@ -31,7 +32,10 @@ func testDatabaseURL(t *testing.T) string {
 	t.Helper()
 	u := os.Getenv("AP_TEST_DATABASE_URL")
 	if u == "" {
-		t.Skip("set AP_TEST_DATABASE_URL for route integration tests")
+		if os.Getenv("CI") != "" {
+			t.Fatal("AP_TEST_DATABASE_URL is required in CI (see GitHub Actions services postgres)")
+		}
+		t.Skip("set AP_TEST_DATABASE_URL to run integration tests against Postgres (SQL queue + timelines)")
 	}
 	return u
 }
@@ -68,12 +72,22 @@ type mastodonStubRoundTripper func(*http.Request) (*http.Response, error)
 func (f mastodonStubRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func mastodonIntegrationStubFetchClient(publicBaseURL string) *http.Client {
+	return mastodonIntegrationStubFetchClientWithRemote(publicBaseURL, "", "")
+}
+
+// mastodonIntegrationStubFetchClientWithRemote resolves local profiles on publicBaseURL and optionally
+// one remote actor IRI (prefix match) to remoteInboxURL — used when fan-out must target an external inbox.
+func mastodonIntegrationStubFetchClientWithRemote(publicBaseURL, remoteActorURL, remoteInboxURL string) *http.Client {
 	base := strings.TrimRight(publicBaseURL, "/")
+	rAct := strings.TrimRight(strings.TrimSpace(remoteActorURL), "/")
+	rInbox := strings.TrimSpace(remoteInboxURL)
+	fallback := fetch.NewHTTPClientForPolicy(fetch.TestingPolicy(), 30*time.Second)
 	return &http.Client{Transport: mastodonStubRoundTripper(func(req *http.Request) (*http.Response, error) {
 		u := req.URL.String()
+		uCanon := strings.TrimRight(u, "/")
 		if strings.HasPrefix(u, base+"/@") || strings.HasPrefix(u, base+"/users/") {
 			inbox := base + "/inbox"
-			doc := map[string]any{"id": strings.TrimRight(u, "/"), "inbox": inbox}
+			doc := map[string]any{"id": uCanon, "inbox": inbox}
 			b, err := json.Marshal(doc)
 			if err != nil {
 				return nil, err
@@ -85,14 +99,27 @@ func mastodonIntegrationStubFetchClient(publicBaseURL string) *http.Client {
 				Request:    req,
 			}, nil
 		}
-		return http.DefaultTransport.RoundTrip(req)
+		if rAct != "" && rInbox != "" && strings.HasPrefix(uCanon, rAct) {
+			doc := map[string]any{"id": rAct, "inbox": rInbox}
+			b, err := json.Marshal(doc)
+			if err != nil {
+				return nil, err
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/activity+json"}},
+				Body:       io.NopCloser(bytes.NewReader(b)),
+				Request:    req,
+			}, nil
+		}
+		return fallback.Transport.RoundTrip(req)
 	})}
 }
 
 func mastodonIntegrationAPHTTPDeps(cfg *config.Config, st *store.Postgres) aphttp.Deps {
 	return aphttp.Deps{
 		Store:       st,
-		Queue:       mastodonTestQueueNoop{},
+		Queue:       sqlqueue.New(st.Pool),
 		FetchPolicy: fetch.TestingPolicy(),
 		FetchClient: mastodonIntegrationStubFetchClient(cfg.PublicBaseURL),
 	}
@@ -476,7 +503,7 @@ func TestIntegration_OAuthToken_flows(t *testing.T) {
 	truncateMastodonTestDB(t, st.Pool)
 
 	cfg := &config.Config{PublicBaseURL: "https://oauth-int.test", LocalUsername: "alice", LocalUsernames: []string{"alice"}}
-	h, err := aphttp.New(cfg, aphttp.Deps{Store: st, Queue: mastodonTestQueueNoop{}})
+	h, err := aphttp.New(cfg, aphttp.Deps{Store: st, Queue: sqlqueue.New(st.Pool)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -772,14 +799,3 @@ func TestIntegration_MastodonUnfollow_removesFollowEdge(t *testing.T) {
 		t.Fatalf("idempotent unfollow %d %s", rec2.Code, rec2.Body.String())
 	}
 }
-
-// mastodonTestQueueNoop satisfies queue.Backend for integration tests that call PublishLocalActivityBytes.
-type mastodonTestQueueNoop struct{}
-
-func (mastodonTestQueueNoop) Enqueue(ctx context.Context, job queue.Job) error { return nil }
-
-func (mastodonTestQueueNoop) Dequeue(ctx context.Context) (*queue.Lease, error) { return nil, nil }
-
-func (mastodonTestQueueNoop) Ack(ctx context.Context, id int64) error { return nil }
-
-func (mastodonTestQueueNoop) Nack(ctx context.Context, id int64, requeue bool) error { return nil }

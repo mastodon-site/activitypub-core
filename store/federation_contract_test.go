@@ -17,6 +17,9 @@ func testDatabaseURL(t *testing.T) string {
 	t.Helper()
 	u := os.Getenv("AP_TEST_DATABASE_URL")
 	if u == "" {
+		if os.Getenv("CI") != "" {
+			t.Fatal("AP_TEST_DATABASE_URL is required in CI")
+		}
 		t.Skip("set AP_TEST_DATABASE_URL for store integration contract tests")
 	}
 	return u
