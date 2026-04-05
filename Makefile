@@ -1,5 +1,8 @@
 # Local checks mirroring .github/workflows/pr-checks.yml (Go job + compile).
 # Docker images: make docker
+#
+# test uses -p 1 so packages with AP_TEST_DATABASE_URL integration tests do not
+# hit the same Postgres concurrently (matches CI).
 
 .PHONY: default build test vet fmt-check fmt mod-verify docker apd-image apw-image
 
@@ -10,7 +13,7 @@ build: fmt-check mod-verify vet test
 	go build ./...
 
 test:
-	go test -race -v ./...
+	go test -race -p 1 -v ./...
 
 vet:
 	go vet ./...
