@@ -50,7 +50,24 @@ func findMigrationsDir(t *testing.T) string {
 func truncateAll(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ctx := context.Background()
-	_, err := pool.Exec(ctx, `TRUNCATE TABLE queue_jobs, deliveries, follows, federated_likes, federated_announces, federated_blocks, activities, objects, actors RESTART IDENTITY CASCADE`)
+	// Include OAuth/local-login tables so tests share a clean slate with mastodonapi
+	// integration tests that use the same AP_TEST_DATABASE_URL.
+	_, err := pool.Exec(ctx, `
+		TRUNCATE TABLE
+			oauth_access_tokens,
+			oauth_authorization_codes,
+			local_accounts,
+			oauth_applications,
+			queue_jobs,
+			deliveries,
+			follows,
+			federated_likes,
+			federated_announces,
+			federated_blocks,
+			activities,
+			objects,
+			actors
+		RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatal(err)
 	}
