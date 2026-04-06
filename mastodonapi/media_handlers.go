@@ -8,6 +8,7 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -41,9 +42,43 @@ func mimeAllowed(cfgMime []string, fileCT string) bool {
 	return false
 }
 
+func inferMIMEFromFilename(name string) string {
+	ext := strings.ToLower(strings.TrimSpace(filepath.Ext(name)))
+	switch ext {
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".png":
+		return "image/png"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	default:
+		return ""
+	}
+}
+
+// effectiveUploadContentType picks a concrete MIME when clients send multipart file
+// parts as application/octet-stream (Go's multipart.Writer.CreateFormFile does this)
+// but supply a useful filename (e.g. photo.png).
+func effectiveUploadContentType(declared, filename string) string {
+	d := strings.TrimSpace(strings.ToLower(declared))
+	if d != "" && d != "application/octet-stream" {
+		return strings.TrimSpace(declared)
+	}
+	if inf := inferMIMEFromFilename(filename); inf != "" {
+		return inf
+	}
+	if strings.TrimSpace(declared) == "" {
+		return "application/octet-stream"
+	}
+	return strings.TrimSpace(declared)
+}
+
 type parsedMediaUpload struct {
 	FileBody        []byte
 	FileContentType string
+	FileName        string
 	Description     string
 	Sensitive       bool
 }
@@ -76,6 +111,12 @@ func (s *Server) readMediaUpload(r *http.Request, max int) (*parsedMediaUpload, 
 				out.FileContentType = p.Header.Get("Content-Type")
 				if out.FileContentType == "" {
 					out.FileContentType = "application/octet-stream"
+				}
+				if cd := strings.TrimSpace(p.Header.Get("Content-Disposition")); cd != "" {
+					_, dispParams, derr := mime.ParseMediaType(cd)
+					if derr == nil {
+						out.FileName = dispParams["filename"]
+					}
 				}
 				out.FileBody, err = io.ReadAll(io.LimitReader(p, int64(max)+1))
 				_ = p.Close()
@@ -196,12 +237,13 @@ func (s *Server) handleMediaPost(w http.ResponseWriter, r *http.Request, actorID
 		writeAPIError(w, http.StatusRequestEntityTooLarge, "payload too large")
 		return
 	}
-	if !mimeAllowed(allowed, parsed.FileContentType) {
+	fileCT := effectiveUploadContentType(parsed.FileContentType, parsed.FileName)
+	if !mimeAllowed(allowed, fileCT) {
 		writeAPIError(w, http.StatusUnprocessableEntity, "Validation failed: File content type is invalid, File is invalid")
 		return
 	}
 
-	key, err := s.H.StoreBlob(r.Context(), parsed.FileContentType, parsed.FileBody)
+	key, err := s.H.StoreBlob(r.Context(), fileCT, parsed.FileBody)
 	if err != nil {
 		writeAPIError(w, http.StatusServiceUnavailable, "media storage not available")
 		return
@@ -213,7 +255,7 @@ func (s *Server) handleMediaPost(w http.ResponseWriter, r *http.Request, actorID
 		initialState = store.MediaProcessingPending
 	}
 
-	mid, err := store.InsertMastodonMedia(r.Context(), s.Pool, actorID, key, parsed.FileContentType, int64(len(parsed.FileBody)), parsed.Description, parsed.Sensitive, initialState)
+	mid, err := store.InsertMastodonMedia(r.Context(), s.Pool, actorID, key, fileCT, int64(len(parsed.FileBody)), parsed.Description, parsed.Sensitive, initialState)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "could not record media")
 		return
@@ -229,7 +271,7 @@ func (s *Server) handleMediaPost(w http.ResponseWriter, r *http.Request, actorID
 			ID:              mid,
 			ActorID:         actorID,
 			BlobKey:         key,
-			ContentType:     parsed.FileContentType,
+			ContentType:     fileCT,
 			ByteSize:        int64(len(parsed.FileBody)),
 			Description:     parsed.Description,
 			Sensitive:       parsed.Sensitive,
