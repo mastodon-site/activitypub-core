@@ -10,11 +10,11 @@ import (
 
 // MastodonList is a user-owned list.
 type MastodonList struct {
-	ID             int64
-	OwnerActorID   int64
-	Title          string
-	RepliesPolicy  string
-	Exclusive      bool
+	ID            int64
+	OwnerActorID  int64
+	Title         string
+	RepliesPolicy string
+	Exclusive     bool
 }
 
 // InsertMastodonList creates a list owned by ownerActorID.
