@@ -148,21 +148,12 @@ func (s *Server) deleteListByID(w http.ResponseWriter, r *http.Request, actorID 
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) getListAccounts(w http.ResponseWriter, r *http.Request, actorID int64) {
-	if r.Method != http.MethodGet {
-		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
+func (s *Server) writeListAccountsPayload(w http.ResponseWriter, r *http.Request, actorID, listID int64) {
 	if s.Pool == nil {
 		writeJSONArrayOK(w, nil)
 		return
 	}
-	lid, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || lid < 1 {
-		writeAPIError(w, http.StatusNotFound, "Record not found")
-		return
-	}
-	ids, err := store.ListMastodonListMemberActorIDs(r.Context(), s.Pool, lid, actorID)
+	ids, err := store.ListMastodonListMemberActorIDs(r.Context(), s.Pool, listID, actorID)
 	if err != nil {
 		writeAPIError(w, http.StatusNotFound, "Record not found")
 		return
@@ -177,6 +168,23 @@ func (s *Server) getListAccounts(w http.ResponseWriter, r *http.Request, actorID
 		out = append(out, m)
 	}
 	writeJSONArrayOK(w, out)
+}
+
+func (s *Server) getListAccounts(w http.ResponseWriter, r *http.Request, actorID int64) {
+	if r.Method != http.MethodGet {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if s.Pool == nil {
+		writeJSONArrayOK(w, nil)
+		return
+	}
+	lid, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || lid < 1 {
+		writeAPIError(w, http.StatusNotFound, "Record not found")
+		return
+	}
+	s.writeListAccountsPayload(w, r, actorID, lid)
 }
 
 func (s *Server) postListAccountsAdd(w http.ResponseWriter, r *http.Request, actorID int64) {
@@ -203,7 +211,7 @@ func (s *Server) postListAccountsAdd(w http.ResponseWriter, r *http.Request, act
 		}
 		_ = store.AddMastodonListMember(r.Context(), s.Pool, lid, actorID, aid)
 	}
-	s.getListAccounts(w, r, actorID)
+	s.writeListAccountsPayload(w, r, actorID, lid)
 }
 
 func (s *Server) deleteListAccountMember(w http.ResponseWriter, r *http.Request, actorID int64) {
