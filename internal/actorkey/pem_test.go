@@ -48,3 +48,21 @@ func TestActorPublicKeyPEMForConfig_derive(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestGenerateRSA2048KeyPair_PrivateKeyToPKCS8PEM_roundTrip(t *testing.T) {
+	priv, err := GenerateRSA2048KeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := PrivateKeyToPKCS8PEM(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priv2, err := ParsePrivateKeyPEM(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if priv2.PublicKey.N.Cmp(priv.PublicKey.N) != 0 {
+		t.Fatal("key mismatch")
+	}
+}

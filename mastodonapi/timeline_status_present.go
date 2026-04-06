@@ -14,6 +14,9 @@ const quotedStatusActivityKey = "_quotedStatusActivityId"
 
 // mastodonStatusPresentation augments a Create-backed status with counts, viewer flags, and optional quote.
 func (s *Server) mastodonStatusPresentation(ctx context.Context, row store.ActivityRow, viewerActorID int64) (map[string]any, bool) {
+	if row.DeletedAt != nil {
+		return nil, false
+	}
 	m, ok := s.mastodonStatusFromCreateRow(ctx, row)
 	if !ok {
 		return nil, false
@@ -75,7 +78,7 @@ func (s *Server) attachQuotedStatus(ctx context.Context, row store.ActivityRow, 
 		return
 	}
 	qrow, err := store.GetActivityByID(ctx, s.Pool, qid)
-	if err != nil {
+	if err != nil || qrow.DeletedAt != nil {
 		return
 	}
 	qst, ok := s.mastodonStatusPresentation(ctx, *qrow, 0)

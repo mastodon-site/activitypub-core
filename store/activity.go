@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,14 +17,15 @@ type ActivityRow struct {
 	ActorID    int64
 	Type       string
 	RawJSON    []byte
+	DeletedAt  *time.Time
 }
 
 // GetActivityByID loads an activity by primary key.
 func GetActivityByID(ctx context.Context, pool *pgxpool.Pool, id int64) (*ActivityRow, error) {
 	var r ActivityRow
 	err := pool.QueryRow(ctx, `
-		SELECT id, activity_id, actor_id, type, raw_json FROM activities WHERE id = $1
-	`, id).Scan(&r.ID, &r.ActivityID, &r.ActorID, &r.Type, &r.RawJSON)
+		SELECT id, activity_id, actor_id, type, raw_json, deleted_at FROM activities WHERE id = $1
+	`, id).Scan(&r.ID, &r.ActivityID, &r.ActorID, &r.Type, &r.RawJSON, &r.DeletedAt)
 	if err != nil {
 		return nil, fmt.Errorf("activity %d: %w", id, err)
 	}
@@ -39,9 +41,9 @@ func ListRecentCreateActivitiesForActor(ctx context.Context, pool *pgxpool.Pool,
 		limit = 80
 	}
 	rows, err := pool.Query(ctx, `
-		SELECT id, activity_id, actor_id, type, raw_json
+		SELECT id, activity_id, actor_id, type, raw_json, deleted_at
 		FROM activities
-		WHERE actor_id = $1 AND lower(type) = 'create'
+		WHERE actor_id = $1 AND lower(type) = 'create' AND deleted_at IS NULL
 		ORDER BY id DESC
 		LIMIT $2
 	`, actorID, limit)
@@ -65,10 +67,13 @@ func ListRecentPublicCreateActivities(ctx context.Context, pool *pgxpool.Pool, i
 		limit = 80
 	}
 	rows, err := pool.Query(ctx, `
-		SELECT a.id, a.activity_id, a.actor_id, a.type, a.raw_json
+		SELECT a.id, a.activity_id, a.actor_id, a.type, a.raw_json, a.deleted_at
 		FROM activities a
 		INNER JOIN actors act ON act.id = a.actor_id
-		WHERE lower(a.type) = 'create' AND lower(act.domain) = lower($1)
+		WHERE lower(a.type) = 'create'
+		  AND a.deleted_at IS NULL
+		  AND lower(act.domain) = lower($1)
+		  AND COALESCE(a.raw_json::jsonb->'object'->>'_visibility', 'public') IN ('public', 'unlisted')
 		ORDER BY a.id DESC
 		LIMIT $2
 	`, instanceDomain, limit)
@@ -83,7 +88,7 @@ func scanActivityRows(rows pgx.Rows) ([]ActivityRow, error) {
 	var out []ActivityRow
 	for rows.Next() {
 		var r ActivityRow
-		if err := rows.Scan(&r.ID, &r.ActivityID, &r.ActorID, &r.Type, &r.RawJSON); err != nil {
+		if err := rows.Scan(&r.ID, &r.ActivityID, &r.ActorID, &r.Type, &r.RawJSON, &r.DeletedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -134,4 +139,75 @@ func ActorProfileByID(ctx context.Context, pool *pgxpool.Pool, id int64) (actorU
 		SELECT actor_url, username, domain FROM actors WHERE id = $1
 	`, id).Scan(&actorURL, &username, &domain)
 	return actorURL, username, domain, err
+}
+
+// SoftDeleteActivityForActor sets deleted_at on a Create activity owned by actorID.
+func SoftDeleteActivityForActor(ctx context.Context, pool *pgxpool.Pool, activityDBID, actorID int64) (bool, error) {
+	tag, err := pool.Exec(ctx, `
+		UPDATE activities SET deleted_at = now()
+		WHERE id = $1 AND actor_id = $2 AND lower(type) = 'create' AND deleted_at IS NULL
+	`, activityDBID, actorID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// ListCreateActivitiesReplyingToNoteIRI returns non-deleted Create activities whose Note inReplyTo matches (oldest first).
+func ListCreateActivitiesReplyingToNoteIRI(ctx context.Context, pool *pgxpool.Pool, parentNoteIRI string, limit int) ([]ActivityRow, error) {
+	parentNoteIRI = CanonicalActorURL(parentNoteIRI)
+	if limit <= 0 {
+		limit = 40
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT id, activity_id, actor_id, type, raw_json, deleted_at
+		FROM activities
+		WHERE lower(type) = 'create'
+		  AND deleted_at IS NULL
+		  AND raw_json::jsonb->'object'->>'inReplyTo' = $1
+		ORDER BY id ASC
+		LIMIT $2
+	`, parentNoteIRI, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanActivityRows(rows)
+}
+
+// ListRecentCreatesForMemberActors returns recent Create activities from any of memberActorIDs on instanceDomain (newest first).
+func ListRecentCreatesForMemberActors(ctx context.Context, pool *pgxpool.Pool, memberActorIDs []int64, instanceDomain string, limit int) ([]ActivityRow, error) {
+	if len(memberActorIDs) == 0 {
+		return nil, nil
+	}
+	instanceDomain = strings.TrimSpace(instanceDomain)
+	if instanceDomain == "" {
+		return nil, fmt.Errorf("instance domain required")
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 80 {
+		limit = 80
+	}
+	rows, err := pool.Query(ctx, `
+		SELECT a.id, a.activity_id, a.actor_id, a.type, a.raw_json, a.deleted_at
+		FROM activities a
+		INNER JOIN actors act ON act.id = a.actor_id
+		WHERE lower(a.type) = 'create'
+		  AND a.deleted_at IS NULL
+		  AND a.actor_id = ANY($1::bigint[])
+		  AND lower(act.domain) = lower($2)
+		  AND COALESCE(a.raw_json::jsonb->'object'->>'_visibility', 'public') IN ('public', 'unlisted')
+		ORDER BY a.id DESC
+		LIMIT $3
+	`, memberActorIDs, instanceDomain, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanActivityRows(rows)
 }

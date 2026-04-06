@@ -2,10 +2,12 @@ package aphttp
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -100,6 +102,28 @@ func randomHexKey(n int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// StoreBlob writes bytes to the configured blob store under a random key (for Mastodon API uploads).
+func (h *Handler) StoreBlob(ctx context.Context, contentType string, data []byte) (key string, err error) {
+	if h.blobs == nil {
+		return "", fmt.Errorf("blob store not configured")
+	}
+	if len(data) == 0 {
+		return "", fmt.Errorf("empty body")
+	}
+	ct := strings.TrimSpace(contentType)
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	key, err = randomHexKey(16)
+	if err != nil {
+		return "", err
+	}
+	if err := h.blobs.Put(ctx, key, ct, bytes.NewReader(data), int64(len(data))); err != nil {
+		return "", err
+	}
+	return key, nil
 }
 
 func safeMediaKey(k string) bool {

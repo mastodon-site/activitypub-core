@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,15 +39,8 @@ func signingUsernameForDelivery(p deliverPayload, cfg *config.Config) string {
 
 // DeliverActivity POSTs a signed Activity to an inbox (same behavior as apw deliver_activity jobs).
 func DeliverActivity(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool, client *http.Client, raw json.RawMessage) error {
-	if cfg.ActorPrivateKeyPath == "" {
-		return fmt.Errorf("AP_ACTOR_PRIVATE_KEY_PATH required for deliver_activity")
-	}
 	if cfg.PublicBaseURL == "" {
 		return fmt.Errorf("AP_PUBLIC_BASE_URL required for deliver_activity (keyId)")
-	}
-	priv, err := actorkey.LoadPrivateKeyFromFile(cfg.ActorPrivateKeyPath)
-	if err != nil {
-		return err
 	}
 	var p deliverPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
@@ -74,6 +68,25 @@ func DeliverActivity(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool
 		}
 	} else if !cfg.IsLocalUsername(user) {
 		return fmt.Errorf("deliver_activity: signing user %q is not a configured local account", user)
+	}
+	var priv *rsa.PrivateKey
+	if pool != nil {
+		pemStr, err := store.ActorPrivateKeyPEMForLocalUser(ctx, pool, domain, user)
+		if err == nil && strings.TrimSpace(pemStr) != "" {
+			priv, err = actorkey.ParsePrivateKeyPEM([]byte(pemStr))
+			if err != nil {
+				return fmt.Errorf("deliver_activity: parse actor private key: %w", err)
+			}
+		}
+	}
+	if priv == nil {
+		if cfg.ActorPrivateKeyPath == "" {
+			return fmt.Errorf("AP_ACTOR_PRIVATE_KEY_PATH required for deliver_activity when per-actor keys are not set")
+		}
+		priv, err = actorkey.LoadPrivateKeyFromFile(cfg.ActorPrivateKeyPath)
+		if err != nil {
+			return err
+		}
 	}
 	keyID := cfg.LocalActorProfileURL(user) + "#main-key"
 	req, err := httpsig.NewSignedPost(p.InboxURL, p.Body, keyID, priv)

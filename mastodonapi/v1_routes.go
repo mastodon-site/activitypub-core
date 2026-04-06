@@ -19,7 +19,7 @@ func (s *Server) mountMastodon(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/instance", s.getInstance)
 	mux.HandleFunc("GET /api/v2/instance", s.getInstanceV2)
 	mux.HandleFunc("GET /api/v2/search", s.getSearchV1)
-	mux.HandleFunc("GET /api/v2/filters", s.v1StubGETEmptyArray)
+	mux.HandleFunc("GET /api/v2/filters", b(s.getFiltersV2))
 	mux.HandleFunc("GET /api/v2/suggestions", s.getSuggestionsV1)
 	mux.HandleFunc("GET /api/v1/instance/extended_description", s.getInstanceExtendedDescription)
 	mux.HandleFunc("GET /api/v1/instance/peers", s.getInstancePeers)
@@ -75,7 +75,7 @@ func (s *Server) mountMastodon(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/timelines/home", b(s.getTimelineHome))
 	mux.HandleFunc("GET /api/v1/timelines/public", s.getTimelinePublic)
 	mux.HandleFunc("GET /api/v1/timelines/tag/{tag}", s.v1StubGETEmptyArray)
-	mux.HandleFunc("GET /api/v1/timelines/list/{id}", s.v1StubGETEmptyArray)
+	mux.HandleFunc("GET /api/v1/timelines/list/{id}", b(s.getTimelineList))
 
 	mux.HandleFunc("GET /api/v1/tags/{name}", s.getTag)
 	mux.HandleFunc("POST /api/v1/tags/{name}/follow", b(s.postTagFollow))
@@ -118,7 +118,7 @@ func (s *Server) mountMastodon(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/v1/polls/{id}", s.getPoll)
 	mux.HandleFunc("POST /api/v1/polls/{id}/votes", b(s.postPollVotes))
 
-	mux.HandleFunc("GET /api/v1/filters", s.v1StubGETEmptyArray)
+	mux.HandleFunc("GET /api/v1/filters", b(s.getFiltersV1))
 	mux.HandleFunc("POST /api/v1/filters", b(s.postFilters))
 	mux.HandleFunc("GET /api/v1/filters/{id}", b(s.getFilterByID))
 	mux.HandleFunc("PUT /api/v1/filters/{id}", b(s.putFilterByID))

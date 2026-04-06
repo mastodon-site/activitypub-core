@@ -170,9 +170,12 @@ func (s *Server) getVerifyCredentials(w http.ResponseWriter, r *http.Request, ac
 }
 
 type statusCreateJSON struct {
-	Status         string `json:"status"`
-	Visibility     string `json:"visibility"`
-	QuotedStatusID *int64 `json:"quoted_status_id,omitempty"`
+	Status            string  `json:"status"`
+	Visibility        string  `json:"visibility"`
+	QuotedStatusID    *int64  `json:"quoted_status_id,omitempty"`
+	InReplyToID       *int64  `json:"in_reply_to_id,omitempty"`
+	MediaIDs          []int64 `json:"media_ids,omitempty"`
+	DirectAccountIDs  []int64 `json:"direct_account_ids,omitempty"`
 }
 
 func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID int64) {
@@ -192,6 +195,10 @@ func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID in
 	ct := r.Header.Get("Content-Type")
 	var text string
 	var quotedStatusID *int64
+	var inReplyToID *int64
+	var mediaIDs []int64
+	var directAccountIDs []int64
+	visibility := "public"
 	if strings.Contains(strings.ToLower(ct), "application/json") {
 		var body statusCreateJSON
 		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil {
@@ -200,6 +207,12 @@ func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID in
 		}
 		text = body.Status
 		quotedStatusID = body.QuotedStatusID
+		inReplyToID = body.InReplyToID
+		mediaIDs = body.MediaIDs
+		directAccountIDs = body.DirectAccountIDs
+		if strings.TrimSpace(body.Visibility) != "" {
+			visibility = strings.TrimSpace(strings.ToLower(body.Visibility))
+		}
 	} else {
 		if err := r.ParseForm(); err != nil {
 			writeAPIError(w, http.StatusBadRequest, "invalid form")
@@ -212,10 +225,23 @@ func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID in
 				quotedStatusID = &n
 			}
 		}
+		if q := strings.TrimSpace(r.FormValue("in_reply_to_id")); q != "" {
+			n, err := strconv.ParseInt(q, 10, 64)
+			if err == nil && n > 0 {
+				inReplyToID = &n
+			}
+		}
+		if v := strings.TrimSpace(strings.ToLower(r.FormValue("visibility"))); v != "" {
+			visibility = v
+		}
 	}
 	text = strings.TrimSpace(text)
-	if text == "" {
+	if text == "" && len(mediaIDs) == 0 {
 		writeAPIError(w, http.StatusBadRequest, "Validation failed: Text can't be blank")
+		return
+	}
+	if visibility != "public" && visibility != "unlisted" && visibility != "private" && visibility != "direct" {
+		writeAPIError(w, http.StatusBadRequest, "invalid visibility")
 		return
 	}
 	root := strings.TrimRight(s.cfg().PublicBaseURL, "/")
@@ -223,13 +249,75 @@ func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID in
 	noteID := newIRI(root, "objects")
 	prof := s.cfg().LocalActorProfileURL(uname)
 	followers := s.cfg().LocalActorFollowersURL(uname)
+	pub := "https://www.w3.org/ns/activitystreams#Public"
+	var to []string
+	var cc []string
+	switch visibility {
+	case "public":
+		to = []string{pub}
+		cc = []string{followers}
+	case "unlisted":
+		to = []string{followers}
+		cc = []string{pub}
+	case "private":
+		to = []string{followers}
+		cc = []string{}
+	case "direct":
+		to = []string{}
+		cc = []string{}
+		for _, aid := range directAccountIDs {
+			if aid < 1 {
+				continue
+			}
+			aurl, _, _, err := store.ActorProfileByID(r.Context(), s.Pool, aid)
+			if err != nil || strings.TrimSpace(aurl) == "" {
+				writeAPIError(w, http.StatusUnprocessableEntity, "invalid direct recipient")
+				return
+			}
+			to = append(to, strings.TrimRight(strings.TrimSpace(aurl), "/"))
+		}
+		if len(to) == 0 {
+			writeAPIError(w, http.StatusUnprocessableEntity, "direct visibility requires direct_account_ids")
+			return
+		}
+	}
 	note := map[string]any{
 		"type":         "Note",
 		"id":           noteID,
 		"attributedTo": prof,
 		"content":      "<p>" + htmlEscapeBasic(text) + "</p>",
-		"to":           []string{"https://www.w3.org/ns/activitystreams#Public"},
-		"cc":           []string{followers},
+		"to":           to,
+		"cc":           cc,
+	}
+	note[noteVisibilityKey] = visibility
+	if visibility == "direct" {
+		ids := make([]any, 0, len(directAccountIDs))
+		for _, id := range directAccountIDs {
+			ids = append(ids, float64(id))
+		}
+		note[noteDirectRecipientsKey] = ids
+	}
+	if len(mediaIDs) > 0 {
+		atts := make([]any, 0, len(mediaIDs))
+		for _, mid := range mediaIDs {
+			if mid < 1 {
+				continue
+			}
+			mr, err := store.GetMastodonMediaForActor(r.Context(), s.Pool, mid, actorID)
+			if err != nil {
+				writeAPIError(w, http.StatusUnprocessableEntity, "invalid media_ids")
+				return
+			}
+			mediaURL := root + "/media/" + mr.BlobKey
+			atts = append(atts, map[string]any{
+				"type":      "Document",
+				"mediaType": mr.ContentType,
+				"url":       mediaURL,
+			})
+		}
+		if len(atts) > 0 {
+			note["attachment"] = atts
+		}
 	}
 	if quotedStatusID != nil && *quotedStatusID > 0 {
 		qrow, err := store.GetActivityByID(r.Context(), s.Pool, *quotedStatusID)
@@ -247,13 +335,27 @@ func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID in
 		extra := "<p><span class=\"quote-inline\"><a href=\"" + htmlEscapeBasic(qres.NoteIRI) + "\">[" + strconv.FormatInt(*quotedStatusID, 10) + "]</a></span></p>"
 		note["content"] = note["content"].(string) + extra
 	}
+	if inReplyToID != nil && *inReplyToID > 0 {
+		prow, err := store.GetActivityByID(r.Context(), s.Pool, *inReplyToID)
+		if err != nil || prow == nil || !strings.EqualFold(strings.TrimSpace(prow.Type), "create") {
+			writeAPIError(w, http.StatusNotFound, "Record not found")
+			return
+		}
+		pres, ok := resolveCreateStatusRow(prow)
+		if !ok {
+			writeAPIError(w, http.StatusNotFound, "Record not found")
+			return
+		}
+		note["inReplyTo"] = pres.NoteIRI
+		note[internalInReplyToActivityKey] = float64(*inReplyToID)
+	}
 	create := map[string]any{
 		"@context": []any{"https://www.w3.org/ns/activitystreams"},
 		"type":     "Create",
 		"id":       actID,
 		"actor":    prof,
-		"to":       []string{"https://www.w3.org/ns/activitystreams#Public"},
-		"cc":       []string{followers},
+		"to":       to,
+		"cc":       cc,
 		"object":   note,
 	}
 	raw, err := json.Marshal(create)
@@ -313,6 +415,7 @@ func (s *Server) getTimelineHome(w http.ResponseWriter, r *http.Request, actorID
 		writeAPIError(w, http.StatusInternalServerError, "could not load timeline")
 		return
 	}
+	rows = s.filterActivityRowsForViewer(ctx, actorID, rows, "home")
 	out := make([]any, 0, len(rows))
 	for _, row := range rows {
 		st, ok := s.mastodonStatusPresentation(ctx, row, actorID)
