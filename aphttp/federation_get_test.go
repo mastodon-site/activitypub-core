@@ -2,6 +2,7 @@ package aphttp
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -165,6 +166,67 @@ func TestContract_GETActivityOrObject_hidesRemoteOwnedActivity(t *testing.T) {
 	mux.ServeHTTP(rr, req)
 	if rr.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestContract_GETActivityOrObject_deletedCreate_returnsTombstone410(t *testing.T) {
+	ctx := context.Background()
+	dsn := integrationDatabaseURL(t)
+	if err := migrate.Up(dsn, findMigrationsDir(t)); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	_, err = pool.Exec(ctx, `TRUNCATE TABLE queue_jobs, deliveries, follows, federated_likes, federated_announces, federated_blocks, activities, objects, actors RESTART IDENTITY CASCADE`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		PublicBaseURL:  "https://tomb.test",
+		LocalUsernames: []string{"alice"},
+		LocalUsername:  "alice",
+	}
+	st := &store.Postgres{Pool: pool}
+	h, err := New(cfg, Deps{Store: st, Queue: nil})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actID := "https://tomb.test/posts/p-del"
+	noteID := "https://tomb.test/obj/n-del"
+	raw := []byte(`{"@context":"https://www.w3.org/ns/activitystreams","id":"` + actID + `","type":"Create","actor":"` + cfg.LocalActorProfileURL("alice") + `","object":{"id":"` + noteID + `","type":"Note","content":"bye"}}`)
+	aliceDB := h.localActorIDs["alice"]
+	if _, err := pool.Exec(ctx, `INSERT INTO activities (activity_id, actor_id, type, raw_json, deleted_at) VALUES ($1,$2,'Create',$3::jsonb, now())`,
+		actID, aliceDB, raw); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	h.Mount(mux)
+
+	for _, path := range []string{actID, noteID} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("Accept", "application/activity+json")
+			rr := httptest.NewRecorder()
+			mux.ServeHTTP(rr, req)
+			if rr.Code != http.StatusGone {
+				t.Fatalf("status %d %s", rr.Code, rr.Body.String())
+			}
+			var doc map[string]any
+			if err := json.Unmarshal(rr.Body.Bytes(), &doc); err != nil {
+				t.Fatal(err)
+			}
+			if doc["type"] != "Tombstone" {
+				t.Fatalf("type %v", doc["type"])
+			}
+			if doc["id"] != noteID {
+				t.Fatalf("id %v", doc["id"])
+			}
+		})
 	}
 }
 

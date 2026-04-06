@@ -35,6 +35,8 @@ type Config struct {
 
 	// InboxMaxBody is the max bytes read for POST /inbox (HTTP Signature + activity body).
 	InboxMaxBody int
+	// CreateObjectMaxFetchBytes caps GET size when materializing Create{object: IRI} (AP_INBOX_CREATE_OBJECT_MAX_FETCH_BYTES, default 1 MiB).
+	CreateObjectMaxFetchBytes int
 
 	// FetchAllowHTTP allows http:// for outbound federation fetches (AP_FETCH_ALLOW_HTTP).
 	// Default false: HTTPS only (recommended on the public internet).
@@ -73,6 +75,12 @@ type Config struct {
 
 	WorkerConcurrency  int
 	WorkerPollInterval time.Duration
+	// DeliveryMaxAttempts is tries per deliver_activity job before dead-letter (AP_DELIVERY_MAX_ATTEMPTS, default 25).
+	DeliveryMaxAttempts int
+	// DeliveryBackoffInitialSec is the first retry delay in seconds (AP_DELIVERY_BACKOFF_INITIAL_SEC, default 30).
+	DeliveryBackoffInitialSec int
+	// DeliveryBackoffMaxSec caps exponential backoff in seconds (AP_DELIVERY_BACKOFF_MAX_SEC, default 86400).
+	DeliveryBackoffMaxSec int
 
 	// InstanceName is a human-readable title for NodeInfo / discovery (AP_INSTANCE_NAME); default: public host.
 	InstanceName string
@@ -102,6 +110,7 @@ func Load() (*Config, error) {
 		ActorPrivateKeyPath:          os.Getenv("AP_ACTOR_PRIVATE_KEY_PATH"),
 		ActorPublicKeyPath:           os.Getenv("AP_ACTOR_PUBLIC_KEY_PATH"),
 		InboxMaxBody:                 getenvInt("AP_INBOX_MAX_BODY_BYTES", 1<<20),
+		CreateObjectMaxFetchBytes:    getenvInt("AP_INBOX_CREATE_OBJECT_MAX_FETCH_BYTES", 1<<20),
 		OutboxPostSecret:             os.Getenv("AP_OUTBOX_POST_SECRET"),
 		MediaUploadSecret:            os.Getenv("AP_MEDIA_UPLOAD_SECRET"),
 		MediaMaxUploadBytes:          getenvInt("AP_MEDIA_MAX_UPLOAD_BYTES", 10<<20),
@@ -115,6 +124,9 @@ func Load() (*Config, error) {
 		BlobS3Region:                 getenv("AP_BLOB_S3_REGION", "us-east-1"),
 		WorkerConcurrency:            getenvInt("AP_WORKER_CONCURRENCY", 2),
 		WorkerPollInterval:           getenvDuration("AP_WORKER_POLL_INTERVAL", 2*time.Second),
+		DeliveryMaxAttempts:          getenvInt("AP_DELIVERY_MAX_ATTEMPTS", 25),
+		DeliveryBackoffInitialSec:    getenvInt("AP_DELIVERY_BACKOFF_INITIAL_SEC", 30),
+		DeliveryBackoffMaxSec:        getenvInt("AP_DELIVERY_BACKOFF_MAX_SEC", 86400),
 		InstanceName:                 strings.TrimSpace(os.Getenv("AP_INSTANCE_NAME")),
 		InstanceDescription:          strings.TrimSpace(os.Getenv("AP_INSTANCE_DESCRIPTION")),
 		SoftwareVersion:              getenv("AP_SOFTWARE_VERSION", "dev"),

@@ -27,3 +27,15 @@ func (h *Handler) verifyAuthorizedFetch(r *http.Request) error {
 	}
 	return httpsig.VerifyGet(r, pub)
 }
+
+// requireAuthorizedFetch writes 401 unless AP_REQUIRE_AUTHORIZED_FETCH is off or the request passes HTTPSig verification.
+func (h *Handler) requireAuthorizedFetch(w http.ResponseWriter, r *http.Request) bool {
+	if h.cfg == nil || !h.cfg.RequireAuthorizedFetch {
+		return true
+	}
+	if err := h.verifyAuthorizedFetch(r); err != nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	return true
+}

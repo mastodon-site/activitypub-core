@@ -3,12 +3,15 @@ package inboxproc
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/mastodon-site/activitypub-core/internal/config"
+	"github.com/mastodon-site/activitypub-core/internal/fetch"
 	"github.com/mastodon-site/activitypub-core/migrate"
 	"github.com/mastodon-site/activitypub-core/store"
 )
@@ -98,7 +101,7 @@ func TestIntegration_Create_toPublicOnly(t *testing.T) {
 	}
 }
 
-func TestIntegration_Create_objectIRIOnly_noObjectRow(t *testing.T) {
+func TestIntegration_Create_objectIRIOnly_nilHTTPClient_skipsFetch(t *testing.T) {
 	ctx, pool := testPool(t)
 	cfg := &config.Config{PublicBaseURL: "https://iri.test", LocalUsernames: []string{"u"}, LocalUsername: "u"}
 	if _, err := store.EnsureLocalActor(ctx, pool, cfg, "u", "k"); err != nil {
@@ -120,7 +123,98 @@ func TestIntegration_Create_objectIRIOnly_noObjectRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cnt != 0 {
-		t.Fatalf("expected no object materialized, got %d", cnt)
+		t.Fatalf("expected no object materialized without HTTP client, got %d", cnt)
+	}
+}
+
+func TestIntegration_Create_objectIRIFetchesRemoteObject(t *testing.T) {
+	ctx, pool := testPool(t)
+	cfg := &config.Config{
+		PublicBaseURL:   "https://fetchiri.test",
+		LocalUsernames:  []string{"u"},
+		LocalUsername:   "u",
+		FetchRelaxLocal: true,
+	}
+	if _, err := store.EnsureLocalActor(ctx, pool, cfg, "u", "k"); err != nil {
+		t.Fatal(err)
+	}
+	rid, err := store.EnsureRemoteActor(ctx, pool, "https://remote.test/users/a", "pem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	objIRI := srv.URL + "/obj/fetched-note"
+	mux.HandleFunc("/obj/fetched-note", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/activity+json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":           objIRI,
+			"type":         "Note",
+			"attributedTo": "https://remote.test/users/a",
+			"content":      "<p>fetched</p>",
+		})
+	})
+	raw, err := json.Marshal(map[string]any{
+		"id":     "https://remote.test/act/fetch-obj",
+		"type":   "Create",
+		"actor":  "https://remote.test/users/a",
+		"to":     []string{"https://www.w3.org/ns/activitystreams#Public"},
+		"object": objIRI,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ins, actPK, err := store.InsertInboundActivity(ctx, pool, rid, "https://remote.test/act/fetch-obj", "Create", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ins {
+		t.Fatal("duplicate insert")
+	}
+	client := srv.Client()
+	if err := ProcessInboxActivity(ctx, pool, discardQueue{}, cfg, client, actPK, fetch.TestingPolicy()); err != nil {
+		t.Fatal(err)
+	}
+	var cnt int
+	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM objects WHERE object_url = $1`, objIRI).Scan(&cnt); err != nil {
+		t.Fatal(err)
+	}
+	if cnt != 1 {
+		t.Fatalf("objects %d", cnt)
+	}
+}
+
+func TestIntegration_Create_pixelfedShapedImageObject(t *testing.T) {
+	ctx, pool := testPool(t)
+	cfg := &config.Config{PublicBaseURL: "https://pix.test", LocalUsernames: []string{"u"}, LocalUsername: "u"}
+	if _, err := store.EnsureLocalActor(ctx, pool, cfg, "u", "k"); err != nil {
+		t.Fatal(err)
+	}
+	rid, err := store.EnsureRemoteActor(ctx, pool, "https://remote.test/users/a", "pem")
+	if err != nil {
+		t.Fatal(err)
+	}
+	img := map[string]any{
+		"id":           "https://pix.test/p/photo1",
+		"type":         "Image",
+		"url":          "https://pix.test/media/abc",
+		"attributedTo": "https://remote.test/users/a",
+	}
+	imgRaw, _ := json.Marshal(img)
+	insertProcess(t, ctx, pool, cfg, rid, "https://remote.test/act/pix", "Create", map[string]any{
+		"id":     "https://remote.test/act/pix",
+		"type":   "Create",
+		"actor":  "https://remote.test/users/a",
+		"to":     []string{"https://www.w3.org/ns/activitystreams#Public"},
+		"object": json.RawMessage(imgRaw),
+	})
+	var typ string
+	if err := pool.QueryRow(ctx, `SELECT type FROM objects WHERE object_url = $1`, "https://pix.test/p/photo1").Scan(&typ); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(typ, "Image") {
+		t.Fatalf("type %q", typ)
 	}
 }
 

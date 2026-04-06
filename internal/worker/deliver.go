@@ -20,6 +20,19 @@ import (
 	"github.com/mastodon-site/activitypub-core/store"
 )
 
+// HTTPDeliveryError is returned when the remote inbox responded with a non-2xx status.
+type HTTPDeliveryError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *HTTPDeliveryError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return fmt.Sprintf("delivery POST %d: %s", e.StatusCode, strings.TrimSpace(e.Body))
+}
+
 type deliverPayload struct {
 	InboxURL        string          `json:"inboxUrl"`
 	Body            json.RawMessage `json:"body"`
@@ -104,7 +117,7 @@ func DeliverActivity(ctx context.Context, cfg *config.Config, pool *pgxpool.Pool
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		slurp, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("delivery POST %s: %s", resp.Status, strings.TrimSpace(string(slurp)))
+		return &HTTPDeliveryError{StatusCode: resp.StatusCode, Body: strings.TrimSpace(string(slurp))}
 	}
 	return nil
 }

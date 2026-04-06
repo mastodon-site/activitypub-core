@@ -109,4 +109,34 @@ func TestIntegration_GETActivityOrObject_authorizedFetch(t *testing.T) {
 			t.Fatalf("want 200 got %d %s", rr.Code, rr.Body.String())
 		}
 	})
+
+	t.Run("outbox_unsigned_401", func(t *testing.T) {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "https://af.test/@alice/outbox", nil)
+		th.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("want 401 got %d", rr.Code)
+		}
+	})
+
+	t.Run("followers_unsigned_401", func(t *testing.T) {
+		rr := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "https://af.test/@alice/followers", nil)
+		th.ServeHTTP(rr, req)
+		if rr.Code != http.StatusUnauthorized {
+			t.Fatalf("want 401 got %d", rr.Code)
+		}
+	})
+
+	t.Run("followers_signed_ok", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "https://af.test/@alice/followers", nil)
+		if err := httpsig.SignGet(req, cfg.InstanceActorKeyID(), priv); err != nil {
+			t.Fatal(err)
+		}
+		rr := httptest.NewRecorder()
+		th.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("want 200 got %d %s", rr.Code, rr.Body.String())
+		}
+	})
 }

@@ -65,7 +65,7 @@ func ProcessInboxActivity(ctx context.Context, pool *pgxpool.Pool, q queue.Backe
 	key := strings.ToLower(t)
 	switch key {
 	case "create":
-		return handleCreate(ctx, pool, cfg, row, fields)
+		return handleCreate(ctx, pool, cfg, row, fields, httpClient, pol)
 	case "update":
 		return handleUpdate(ctx, pool, cfg, row, fields)
 	case "delete":

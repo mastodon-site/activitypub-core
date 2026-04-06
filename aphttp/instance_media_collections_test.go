@@ -154,7 +154,41 @@ func TestIntegration_followersCollection_includesAcceptedActor(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status %d %s", rr.Code, rr.Body.String())
 	}
-	if !bytes.Contains(rr.Body.Bytes(), []byte(cfg.LocalActorProfileURL("alice"))) {
-		t.Fatalf("expected alice IRI in followers: %s", rr.Body.String())
+	var root map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &root); err != nil {
+		t.Fatalf("root json: %v", err)
+	}
+	if root["type"] != "OrderedCollection" {
+		t.Fatalf("root type %v", root["type"])
+	}
+	first, _ := root["first"].(string)
+	if first == "" {
+		t.Fatalf("missing first in root: %s", rr.Body.String())
+	}
+	rrPage := httptest.NewRecorder()
+	reqPage := httptestNewRequestAbsolute(t, http.MethodGet, first)
+	reqPage.Header.Set("Accept", "application/activity+json")
+	th.ServeHTTP(rrPage, reqPage)
+	if rrPage.Code != http.StatusOK {
+		t.Fatalf("first page status %d %s", rrPage.Code, rrPage.Body.String())
+	}
+	var page map[string]any
+	if err := json.Unmarshal(rrPage.Body.Bytes(), &page); err != nil {
+		t.Fatalf("page json: %v", err)
+	}
+	if page["type"] != "OrderedCollectionPage" {
+		t.Fatalf("page type %v body %s", page["type"], rrPage.Body.String())
+	}
+	aliceIRI := cfg.LocalActorProfileURL("alice")
+	items, _ := page["orderedItems"].([]any)
+	found := false
+	for _, it := range items {
+		if s, ok := it.(string); ok && s == aliceIRI {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("alice %q not in orderedItems %#v body %s", aliceIRI, items, rrPage.Body.String())
 	}
 }

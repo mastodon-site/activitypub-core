@@ -18,6 +18,9 @@ func (h *Handler) GetOutbox(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "server not configured", http.StatusServiceUnavailable)
 		return
 	}
+	if !h.requireAuthorizedFetch(w, r) {
+		return
+	}
 	handle := r.PathValue("handle")
 	username, ok := parseAtHandle(handle)
 	if !ok || !h.IsLocalActor(username) {
@@ -30,12 +33,29 @@ func (h *Handler) GetOutbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, maxID, sinceID := collectionPageParams(r)
+	collBase := h.cfg.LocalActorOutboxURL(username)
+	if !collectionPagingActive(r) {
+		total, _, _, err := store.OutboxPage(r.Context(), h.st.Pool, actorID, 1, nil, nil)
+		if err != nil {
+			http.Error(w, "outbox", http.StatusInternalServerError)
+			return
+		}
+		doc := map[string]any{
+			"@context":   "https://www.w3.org/ns/activitystreams",
+			"id":         collBase,
+			"type":       "OrderedCollection",
+			"totalItems": total,
+			"first":      firstCollectionPageURL(collBase, limit),
+		}
+		writeAS2JSON(w, r, doc)
+		return
+	}
+
 	total, items, nextCur, err := store.OutboxPage(r.Context(), h.st.Pool, actorID, limit, maxID, sinceID)
 	if err != nil {
 		http.Error(w, "outbox", http.StatusInternalServerError)
 		return
 	}
-	collBase := h.cfg.LocalActorOutboxURL(username)
 	collID := collBase
 	if q := r.URL.RawQuery; q != "" {
 		collID = collBase + "?" + q

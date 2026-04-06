@@ -1,6 +1,7 @@
 package aphttp
 
 import (
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -19,6 +20,9 @@ func (h *Handler) GetFollowersCollection(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "server not configured", http.StatusServiceUnavailable)
 		return
 	}
+	if !h.requireAuthorizedFetch(w, r) {
+		return
+	}
 	handle := r.PathValue("handle")
 	username, ok := parseAtHandle(handle)
 	if !ok || !h.IsLocalActor(username) {
@@ -31,16 +35,33 @@ func (h *Handler) GetFollowersCollection(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	limit, maxID, sinceID := collectionPageParams(r)
+	collBase := h.cfg.LocalActorFollowersURL(username)
+	if !collectionPagingActive(r) {
+		total, _, _, err := store.FollowersPage(r.Context(), h.st.Pool, actorID, 1, nil, nil)
+		if err != nil {
+			http.Error(w, "followers", http.StatusInternalServerError)
+			return
+		}
+		doc := map[string]any{
+			"@context":   "https://www.w3.org/ns/activitystreams",
+			"id":         collBase,
+			"type":       "OrderedCollection",
+			"totalItems": total,
+			"first":      firstCollectionPageURL(collBase, limit),
+		}
+		writeAS2JSON(w, r, doc)
+		return
+	}
 	total, items, nextCur, err := store.FollowersPage(r.Context(), h.st.Pool, actorID, limit, maxID, sinceID)
 	if err != nil {
 		http.Error(w, "followers", http.StatusInternalServerError)
 		return
 	}
-	collID := h.cfg.LocalActorFollowersURL(username)
+	collID := collBase
 	if q := r.URL.RawQuery; q != "" {
-		collID = collID + "?" + q
+		collID = collBase + "?" + q
 	}
-	doc := orderedCollectionPageDoc(collID, h.cfg.LocalActorFollowersURL(username), total, items, nextCur, r)
+	doc := orderedCollectionPageDoc(collID, collBase, total, items, nextCur, r)
 	writeAS2JSON(w, r, doc)
 }
 
@@ -54,6 +75,9 @@ func (h *Handler) GetFollowingCollection(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "server not configured", http.StatusServiceUnavailable)
 		return
 	}
+	if !h.requireAuthorizedFetch(w, r) {
+		return
+	}
 	handle := r.PathValue("handle")
 	username, ok := parseAtHandle(handle)
 	if !ok || !h.IsLocalActor(username) {
@@ -66,16 +90,33 @@ func (h *Handler) GetFollowingCollection(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	limit, maxID, sinceID := collectionPageParams(r)
+	collBase := h.cfg.LocalActorFollowingURL(username)
+	if !collectionPagingActive(r) {
+		total, _, _, err := store.FollowingPage(r.Context(), h.st.Pool, actorID, 1, nil, nil)
+		if err != nil {
+			http.Error(w, "following", http.StatusInternalServerError)
+			return
+		}
+		doc := map[string]any{
+			"@context":   "https://www.w3.org/ns/activitystreams",
+			"id":         collBase,
+			"type":       "OrderedCollection",
+			"totalItems": total,
+			"first":      firstCollectionPageURL(collBase, limit),
+		}
+		writeAS2JSON(w, r, doc)
+		return
+	}
 	total, items, nextCur, err := store.FollowingPage(r.Context(), h.st.Pool, actorID, limit, maxID, sinceID)
 	if err != nil {
 		http.Error(w, "following", http.StatusInternalServerError)
 		return
 	}
-	collID := h.cfg.LocalActorFollowingURL(username)
+	collID := collBase
 	if q := r.URL.RawQuery; q != "" {
-		collID = collID + "?" + q
+		collID = collBase + "?" + q
 	}
-	doc := orderedCollectionPageDoc(collID, h.cfg.LocalActorFollowingURL(username), total, items, nextCur, r)
+	doc := orderedCollectionPageDoc(collID, collBase, total, items, nextCur, r)
 	writeAS2JSON(w, r, doc)
 }
 
@@ -90,6 +131,33 @@ func collectionPageParams(r *http.Request) (limit int, maxID, sinceID *int64) {
 	maxID = parseInt64Ptr(q.Get("max_id"))
 	sinceID = parseInt64Ptr(q.Get("since_id"))
 	return limit, maxID, sinceID
+}
+
+// collectionPagingActive is true when the client asked for a concrete page (cursor), not the collection root.
+func collectionPagingActive(r *http.Request) bool {
+	q := r.URL.Query()
+	return parseInt64Ptr(q.Get("max_id")) != nil || parseInt64Ptr(q.Get("since_id")) != nil
+}
+
+// firstCollectionPageURL is the OrderedCollection "first" link: a paged URL (limit + max_id sentinel).
+// max_id=MaxInt64 means “no upper bound” so the store returns the newest window; without a cursor,
+// collectionPagingActive would stay false and clients would get another bare OrderedCollection.
+func firstCollectionPageURL(collBase string, limit int) string {
+	sentinel := strconv.FormatInt(math.MaxInt64, 10)
+	u, err := url.Parse(collBase)
+	if err != nil || u.Scheme == "" {
+		sep := "?"
+		if strings.Contains(collBase, "?") {
+			sep = "&"
+		}
+		return collBase + sep + "limit=" + strconv.Itoa(limit) + "&max_id=" + sentinel
+	}
+	q := u.Query()
+	q.Set("limit", strconv.Itoa(limit))
+	q.Set("max_id", sentinel)
+	q.Del("since_id")
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 func parseInt64Ptr(s string) *int64 {

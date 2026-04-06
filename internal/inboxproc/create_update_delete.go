@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -12,10 +13,11 @@ import (
 
 	"github.com/mastodon-site/activitypub-core/internal/as2"
 	"github.com/mastodon-site/activitypub-core/internal/config"
+	"github.com/mastodon-site/activitypub-core/internal/fetch"
 	"github.com/mastodon-site/activitypub-core/store"
 )
 
-func handleCreate(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config, row *store.ActivityRow, fields map[string]json.RawMessage) error {
+func handleCreate(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config, row *store.ActivityRow, fields map[string]json.RawMessage, httpClient *http.Client, fetchPolicy *fetch.Policy) error {
 	rawObj, ok := fields["object"]
 	if !ok {
 		return fmt.Errorf("create missing object")
@@ -24,8 +26,29 @@ func handleCreate(ctx context.Context, pool *pgxpool.Pool, cfg *config.Config, r
 	if err != nil {
 		return err
 	}
+	if len(rawJSON) == 0 && id != "" && httpClient != nil {
+		maxB := int64(1 << 20)
+		if cfg != nil && cfg.CreateObjectMaxFetchBytes > 0 {
+			maxB = int64(cfg.CreateObjectMaxFetchBytes)
+		}
+		pol := fetchPolicy
+		if pol == nil {
+			pol = fetch.PolicyFromConfig(cfg)
+		}
+		body, ferr := fetch.FetchActivityPubJSON(ctx, httpClient, pol, id, cfg, maxB)
+		if ferr != nil {
+			return fmt.Errorf("create fetch object: %w", ferr)
+		}
+		id2, typ2, raw2, err := as2.ObjectFieldIDType(body)
+		if err != nil {
+			return fmt.Errorf("create fetched object: %w", err)
+		}
+		if !actorsMatch(id2, id) {
+			return fmt.Errorf("create: fetched object id does not match IRI")
+		}
+		id, typ, rawJSON = id2, typ2, raw2
+	}
 	if len(rawJSON) == 0 {
-		// Object given by IRI only; would require a fetch to materialize.
 		return nil
 	}
 	if !activityShouldApplySideEffects(cfg, fields) {
