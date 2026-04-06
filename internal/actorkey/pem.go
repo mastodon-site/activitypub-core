@@ -2,6 +2,7 @@
 package actorkey
 
 import (
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
@@ -111,4 +112,21 @@ func ActorPublicKeyPEMForConfig(cfg *config.Config) (string, error) {
 		return string(pubRaw), nil
 	}
 	return PublicKeyPEMFromPrivate(priv)
+}
+
+// GenerateRSA2048KeyPair returns a new RSA 2048-bit key pair.
+func GenerateRSA2048KeyPair() (*rsa.PrivateKey, error) {
+	return rsa.GenerateKey(rand.Reader, 2048)
+}
+
+// PrivateKeyToPKCS8PEM encodes an RSA private key as a PEM "PRIVATE KEY" (PKCS#8) block.
+func PrivateKeyToPKCS8PEM(priv *rsa.PrivateKey) ([]byte, error) {
+	if priv == nil {
+		return nil, fmt.Errorf("nil private key")
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		return nil, err
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil
 }

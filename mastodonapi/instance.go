@@ -4,17 +4,23 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+
+	"github.com/mastodon-site/activitypub-core/internal/config"
 )
 
 // mastodonCompatibleVersion is reported to clients via /api/v1|v2/instance (Mastodon 4.x API target).
 const mastodonCompatibleVersion = "4.3.0+activitypub-core"
 
 func (s *Server) instanceV1Payload() map[string]any {
+	cfg := s.cfg()
 	host := s.instanceHost()
 	root := ""
-	if u := strings.TrimSpace(s.cfg().PublicBaseURL); u != "" {
+	if u := strings.TrimSpace(cfg.PublicBaseURL); u != "" {
 		root = strings.TrimRight(u, "/")
 	}
+	supportedMimes := cfg.EffectiveMediaAllowedMIMETypes()
+	maxAtt := cfg.EffectiveMediaMaxAttachmentsPerStatus()
+	imgLimit := instanceImageSizeLimit(cfg)
 	out := map[string]any{
 		"uri":               host,
 		"title":             host,
@@ -40,14 +46,12 @@ func (s *Server) instanceV1Payload() map[string]any {
 			},
 			"statuses": map[string]any{
 				"max_characters":              500,
-				"max_media_attachments":       4,
+				"max_media_attachments":       maxAtt,
 				"characters_reserved_per_url": 23,
 			},
 			"media_attachments": map[string]any{
-				"supported_mime_types": []string{
-					"image/jpeg", "image/png", "image/gif", "image/webp",
-				},
-				"image_size_limit": int64(8 << 20),
+				"supported_mime_types": supportedMimes,
+				"image_size_limit":     imgLimit,
 			},
 			"vapid": map[string]any{
 				"public_key": nil,
@@ -60,9 +64,27 @@ func (s *Server) instanceV1Payload() map[string]any {
 	return out
 }
 
+func instanceImageSizeLimit(cfg *config.Config) int64 {
+	n := int64(0)
+	if cfg != nil {
+		n = int64(cfg.MediaMaxUploadBytes)
+	}
+	if n <= 0 {
+		n = int64(10 << 20)
+	}
+	return n
+}
+
 func (s *Server) instanceV2Payload() map[string]any {
+	cfg := s.cfg()
 	host := s.instanceHost()
-	supportedMimes := []string{"image/jpeg", "image/png", "image/gif", "image/webp"}
+	supportedMimes := cfg.EffectiveMediaAllowedMIMETypes()
+	maxAtt := cfg.EffectiveMediaMaxAttachmentsPerStatus()
+	imgLimit := instanceImageSizeLimit(cfg)
+	descLimit := 1500
+	if cfg != nil && cfg.MediaDescriptionLimit > 0 {
+		descLimit = cfg.MediaDescriptionLimit
+	}
 	return map[string]any{
 		"domain":      host,
 		"title":       host,
@@ -90,13 +112,13 @@ func (s *Server) instanceV2Payload() map[string]any {
 			},
 			"statuses": map[string]any{
 				"max_characters":              500,
-				"max_media_attachments":       4,
+				"max_media_attachments":       maxAtt,
 				"characters_reserved_per_url": 23,
 			},
 			"media_attachments": map[string]any{
-				"description_limit":      1500,
+				"description_limit":      descLimit,
 				"supported_mime_types":   supportedMimes,
-				"image_size_limit":       int64(8 << 20),
+				"image_size_limit":       imgLimit,
 				"image_matrix_limit":     int64(33177600),
 				"video_matrix_limit":     int64(8294400),
 				"video_size_limit":       int64(100 << 20),

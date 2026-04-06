@@ -47,24 +47,32 @@ func createUserCmd(args []string) {
 	if cfg.PublicBaseURL == "" {
 		log.Fatal("AP_PUBLIC_BASE_URL required")
 	}
-	var pubPEM string
-	if cfg.ActorPrivateKeyPath != "" {
-		pubPEM, err = actorkey.ActorPublicKeyPEMForConfig(cfg)
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
 	st, err := postgres.NewPool(ctx, cfg.DatabaseURL)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer st.Pool.Close()
+	priv, err := actorkey.GenerateRSA2048KeyPair()
+	if err != nil {
+		log.Fatal(err)
+	}
+	privPEM, err := actorkey.PrivateKeyToPKCS8PEM(priv)
+	if err != nil {
+		log.Fatal(err)
+	}
+	pubPEM, err := actorkey.PublicKeyPEMFromPrivate(priv)
+	if err != nil {
+		log.Fatal(err)
+	}
 	id, err := store.UpsertLocalActor(ctx, st.Pool, cfg, *username, pubPEM)
 	if err != nil {
+		log.Fatal(err)
+	}
+	if err := store.SetActorRSAKeypair(ctx, st.Pool, id, string(privPEM), pubPEM); err != nil {
 		log.Fatal(err)
 	}
 	if err := store.UpsertLocalAccountPassword(ctx, st.Pool, id, *password); err != nil {
 		log.Fatal(err)
 	}
-	fmt.Printf("ok user %q actor_id=%d — restart apd if it is already running so it picks up the new account.\n", *username, id)
+	fmt.Printf("ok user %q actor_id=%d (per-actor RSA key stored) — restart apd if it is already running so it picks up the new account.\n", *username, id)
 }

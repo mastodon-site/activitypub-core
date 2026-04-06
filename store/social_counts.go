@@ -142,7 +142,7 @@ func ListRecentLikeActivitiesForActor(ctx context.Context, pool *pgxpool.Pool, a
 		limit = 80
 	}
 	rows, err := pool.Query(ctx, `
-		SELECT id, activity_id, actor_id, type, raw_json
+		SELECT id, activity_id, actor_id, type, raw_json, deleted_at
 		FROM activities
 		WHERE actor_id = $1 AND lower(type) = 'like'
 		ORDER BY id DESC

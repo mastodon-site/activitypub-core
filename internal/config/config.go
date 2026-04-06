@@ -49,6 +49,14 @@ type Config struct {
 	// MediaUploadSecret enables POST /media with Authorization: Bearer <secret>.
 	MediaUploadSecret   string
 	MediaMaxUploadBytes int
+	// MediaMaxAttachmentsPerStatus caps media_ids on POST /api/v1/statuses (AP_MEDIA_MAX_ATTACHMENTS_PER_STATUS, default 4).
+	MediaMaxAttachmentsPerStatus int
+	// MediaAllowedMIMETypes is the upload allowlist for POST /api/v1|v2/media; empty means built-in image defaults.
+	MediaAllowedMIMETypes []string
+	// MediaAsyncUpload makes POST /api/v2/media return 202 while attachments finish processing in the background (AP_MEDIA_ASYNC_UPLOAD).
+	MediaAsyncUpload bool
+	// MediaDescriptionLimit is reported in GET /api/v2/instance configuration (AP_MEDIA_DESCRIPTION_LIMIT, default 1500).
+	MediaDescriptionLimit int
 
 	// RequireAuthorizedFetch rejects unsigned GET for federation objects when true (AP_REQUIRE_AUTHORIZED_FETCH).
 	RequireAuthorizedFetch bool
@@ -84,30 +92,32 @@ type Config struct {
 // Load reads configuration from environment variables.
 func Load() (*Config, error) {
 	c := &Config{
-		HTTPListen:                  getenv("AP_HTTP_LISTEN", ":8080"),
-		MetricsListen:               os.Getenv("AP_METRICS_LISTEN"),
-		DatabaseURL:                 os.Getenv("AP_DATABASE_URL"),
-		RedisURL:                    os.Getenv("AP_REDIS_URL"),
-		QueueBackend:                strings.ToLower(getenv("AP_QUEUE_BACKEND", "sql")),
-		PublicBaseURL:               strings.TrimRight(os.Getenv("AP_PUBLIC_BASE_URL"), "/"),
-		FollowAutoAccept:            true,
-		ActorPrivateKeyPath:         os.Getenv("AP_ACTOR_PRIVATE_KEY_PATH"),
-		ActorPublicKeyPath:          os.Getenv("AP_ACTOR_PUBLIC_KEY_PATH"),
-		InboxMaxBody:                getenvInt("AP_INBOX_MAX_BODY_BYTES", 1<<20),
-		OutboxPostSecret:            os.Getenv("AP_OUTBOX_POST_SECRET"),
-		MediaUploadSecret:           os.Getenv("AP_MEDIA_UPLOAD_SECRET"),
-		MediaMaxUploadBytes:         getenvInt("AP_MEDIA_MAX_UPLOAD_BYTES", 10<<20),
-		InstanceActorPrivateKeyPath: os.Getenv("AP_INSTANCE_ACTOR_PRIVATE_KEY_PATH"),
-		BlobBackend:                 strings.ToLower(getenv("AP_BLOB_BACKEND", "filesystem")),
-		BlobFSRoot:                  getenv("AP_BLOB_FS_ROOT", "./blobdata"),
-		BlobS3Bucket:                os.Getenv("AP_BLOB_S3_BUCKET"),
-		BlobS3Endpoint:              os.Getenv("AP_BLOB_S3_ENDPOINT"),
-		BlobS3Region:                getenv("AP_BLOB_S3_REGION", "us-east-1"),
-		WorkerConcurrency:           getenvInt("AP_WORKER_CONCURRENCY", 2),
-		WorkerPollInterval:          getenvDuration("AP_WORKER_POLL_INTERVAL", 2*time.Second),
-		InstanceName:                strings.TrimSpace(os.Getenv("AP_INSTANCE_NAME")),
-		InstanceDescription:         strings.TrimSpace(os.Getenv("AP_INSTANCE_DESCRIPTION")),
-		SoftwareVersion:             getenv("AP_SOFTWARE_VERSION", "dev"),
+		HTTPListen:                   getenv("AP_HTTP_LISTEN", ":8080"),
+		MetricsListen:                os.Getenv("AP_METRICS_LISTEN"),
+		DatabaseURL:                  os.Getenv("AP_DATABASE_URL"),
+		RedisURL:                     os.Getenv("AP_REDIS_URL"),
+		QueueBackend:                 strings.ToLower(getenv("AP_QUEUE_BACKEND", "sql")),
+		PublicBaseURL:                strings.TrimRight(os.Getenv("AP_PUBLIC_BASE_URL"), "/"),
+		FollowAutoAccept:             true,
+		ActorPrivateKeyPath:          os.Getenv("AP_ACTOR_PRIVATE_KEY_PATH"),
+		ActorPublicKeyPath:           os.Getenv("AP_ACTOR_PUBLIC_KEY_PATH"),
+		InboxMaxBody:                 getenvInt("AP_INBOX_MAX_BODY_BYTES", 1<<20),
+		OutboxPostSecret:             os.Getenv("AP_OUTBOX_POST_SECRET"),
+		MediaUploadSecret:            os.Getenv("AP_MEDIA_UPLOAD_SECRET"),
+		MediaMaxUploadBytes:          getenvInt("AP_MEDIA_MAX_UPLOAD_BYTES", 10<<20),
+		MediaMaxAttachmentsPerStatus: getenvInt("AP_MEDIA_MAX_ATTACHMENTS_PER_STATUS", 4),
+		MediaDescriptionLimit:        getenvInt("AP_MEDIA_DESCRIPTION_LIMIT", 1500),
+		InstanceActorPrivateKeyPath:  os.Getenv("AP_INSTANCE_ACTOR_PRIVATE_KEY_PATH"),
+		BlobBackend:                  strings.ToLower(getenv("AP_BLOB_BACKEND", "filesystem")),
+		BlobFSRoot:                   getenv("AP_BLOB_FS_ROOT", "./blobdata"),
+		BlobS3Bucket:                 os.Getenv("AP_BLOB_S3_BUCKET"),
+		BlobS3Endpoint:               os.Getenv("AP_BLOB_S3_ENDPOINT"),
+		BlobS3Region:                 getenv("AP_BLOB_S3_REGION", "us-east-1"),
+		WorkerConcurrency:            getenvInt("AP_WORKER_CONCURRENCY", 2),
+		WorkerPollInterval:           getenvDuration("AP_WORKER_POLL_INTERVAL", 2*time.Second),
+		InstanceName:                 strings.TrimSpace(os.Getenv("AP_INSTANCE_NAME")),
+		InstanceDescription:          strings.TrimSpace(os.Getenv("AP_INSTANCE_DESCRIPTION")),
+		SoftwareVersion:              getenv("AP_SOFTWARE_VERSION", "dev"),
 	}
 	if v := strings.TrimSpace(os.Getenv("AP_CORS_ALLOW_ORIGINS")); v != "" {
 		for _, part := range strings.Split(v, ",") {
@@ -161,8 +171,54 @@ func Load() (*Config, error) {
 	if truthyEnv("AP_OPEN_REGISTRATIONS") {
 		c.OpenRegistrations = true
 	}
+	if truthyEnv("AP_MEDIA_ASYNC_UPLOAD") {
+		c.MediaAsyncUpload = true
+	}
+	if v := strings.TrimSpace(os.Getenv("AP_MEDIA_ALLOWED_MIME_TYPES")); v != "" {
+		for _, part := range strings.Split(v, ",") {
+			part = strings.TrimSpace(strings.ToLower(part))
+			if part != "" {
+				c.MediaAllowedMIMETypes = append(c.MediaAllowedMIMETypes, part)
+			}
+		}
+	}
 
 	return c, nil
+}
+
+// DefaultMediaAllowedMIMETypes is the implicit allowlist when AP_MEDIA_ALLOWED_MIME_TYPES is unset.
+func DefaultMediaAllowedMIMETypes() []string {
+	return []string{"image/jpeg", "image/png", "image/gif", "image/webp"}
+}
+
+// EffectiveMediaAllowedMIMETypes returns the configured allowlist or the default image types.
+func (c *Config) EffectiveMediaAllowedMIMETypes() []string {
+	if c == nil || len(c.MediaAllowedMIMETypes) == 0 {
+		return DefaultMediaAllowedMIMETypes()
+	}
+	out := make([]string, 0, len(c.MediaAllowedMIMETypes))
+	for _, m := range c.MediaAllowedMIMETypes {
+		m = strings.TrimSpace(strings.ToLower(m))
+		if m != "" {
+			out = append(out, m)
+		}
+	}
+	if len(out) == 0 {
+		return DefaultMediaAllowedMIMETypes()
+	}
+	return out
+}
+
+// EffectiveMediaMaxAttachmentsPerStatus returns the cap for media_ids on new statuses (minimum 1).
+func (c *Config) EffectiveMediaMaxAttachmentsPerStatus() int {
+	n := 4
+	if c != nil && c.MediaMaxAttachmentsPerStatus > 0 {
+		n = c.MediaMaxAttachmentsPerStatus
+	}
+	if n < 1 {
+		return 1
+	}
+	return n
 }
 
 func truthyEnv(key string) bool {

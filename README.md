@@ -22,7 +22,7 @@ Served on **`AP_HTTP_LISTEN`** (default `:8080`). Unless noted, paths are rooted
 | `/api/v1/instance` | `GET` | Mastodon 4.x–compatible instance metadata (still used alongside v2). |
 | `/api/v2/instance` | `GET` | Mastodon 4.x instance entity (configuration, `api_versions`, etc.). |
 | `/api/v2/search` | `GET` | Unified search (same behavior as `/api/v1/search`; Mastodon 4 clients often call v2). |
-| `/api/v2/filters` | `GET` | Empty filter list (`[]`; content filters not implemented). |
+| `/api/v2/filters` | `GET` | Keyword filters for the authenticated user (Bearer). |
 | `/api/v2/suggestions` | `GET` | Empty suggestions (`[]`). |
 | `/api/v1/instance/extended_description` | `GET` | Empty extended description JSON (client probes). |
 | `/.well-known/oauth-authorization-server` | `GET` | OAuth 2.0 Authorization Server Metadata (RFC 8414); discovery for `/oauth/*`. |
@@ -33,10 +33,11 @@ Served on **`AP_HTTP_LISTEN`** (default `:8080`). Unless noted, paths are rooted
 | `/oauth/authorize` | `GET`, `POST` | Browser login; issues authorization `code`. |
 | `/oauth/token` | `POST` | Exchange `code` for `access_token` (`grant_type=authorization_code`, PKCE supported). |
 | `/api/v1/accounts/verify_credentials` | `GET` | Current account (`Bearer` access token). |
-| `/api/v1/statuses` | `POST` | Create a public Note (`Bearer`). |
+| `/api/v1/statuses` | `POST` | Create a Note (`Bearer`; optional `media_ids`, `in_reply_to_id`, `visibility`, `direct_account_ids` for DMs). |
+| `/api/v1/media` | `POST` | Upload an attachment (`Bearer`); requires blob storage (`apd` `Deps.Blobs`, e.g. filesystem/S3). |
 | `/api/v1/accounts/search` | `GET` | Search by `acct:user@host`, or HTTPS actor URL. |
 | `/api/v1/accounts/{id}/follow` | `POST` | Follow target account id from search (`Bearer`). |
-| `/api/v1/timelines/home` | `GET` | Empty list (stub; satisfies clients). |
+| `/api/v1/timelines/home` | `GET` | Recent posts by the authenticated local user (Bearer; Postgres + migrations required). |
 | `/health/live` | `GET` | Liveness (always OK if process is up). |
 | `/health/ready` | `GET` | Readiness; pings Postgres when `AP_DATABASE_URL` is set. |
 | `/metrics` | `GET` | Prometheus metrics for the API process. |
@@ -54,7 +55,7 @@ Served on **`AP_HTTP_LISTEN`** (default `:8080`). Unless noted, paths are rooted
 
 **Federation checklist:** HTTPS on the public URL, worker running, Postgres migrated, queue drained for `deliver_activity`; remote servers may require signed fetches (`AP_SIGN_GET`, `AP_REQUIRE_AUTHORIZED_FETCH` on peers) per their policy.
 
-**Limitations:** one shared **`AP_ACTOR_PRIVATE_KEY_PATH`** is used to sign deliveries for all local users until per-user keys exist; the Mastodon **4.x** client API is mostly stubbed beyond login, post, search, and follow (no streaming, real notifications, or full status read model); `apw` validates signing users against Postgres when a pool is available.
+**Limitations:** `apadmin create-user` stores a **per-actor RSA keypair** in Postgres (`actors.private_key_pem` / `public_key_pem`); `apw` uses that key for `deliver_activity` when present, otherwise falls back to **`AP_ACTOR_PRIVATE_KEY_PATH`**. Config-only local users (`AP_LOCAL_USERNAMES` without `apadmin`) still use the shared file key until a row key is set. Mastodon API additions include **`POST /api/v1/media`** (needs blob storage on `apd`), **`media_ids`** on **`POST /api/v1/statuses`**, **`DELETE /api/v1/statuses/:id`**, **`GET .../context`**, **`visibility`** (`public` / `unlisted` / `private` / `direct` with **`direct_account_ids`**), **lists**, **keyword filters** (home/public/thread contexts), and **conversations** for direct visibility. Streaming, push, real notifications, and much of the rest of the Mastodon surface remain stubbed or minimal.
 
 ### Docker Compose
 

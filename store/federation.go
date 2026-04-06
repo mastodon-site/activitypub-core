@@ -13,7 +13,8 @@ import (
 	"github.com/mastodon-site/activitypub-core/internal/config"
 )
 
-const localActorKeyPlaceholder = "(local-public-key-unconfigured)"
+// LocalActorPublicKeyPlaceholder is stored when no real key PEM is configured yet.
+const LocalActorPublicKeyPlaceholder = "(local-public-key-unconfigured)"
 
 type dbQueryRow interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
@@ -46,7 +47,7 @@ func UpsertLocalActor(ctx context.Context, pool dbQueryRow, cfg *config.Config, 
 	outboxURL := root + "/@" + url.PathEscape(username) + "/outbox"
 	pem := publicKeyPEM
 	if strings.TrimSpace(pem) == "" {
-		pem = localActorKeyPlaceholder
+		pem = LocalActorPublicKeyPlaceholder
 	}
 	var id int64
 	err = pool.QueryRow(ctx, `
@@ -56,7 +57,10 @@ func UpsertLocalActor(ctx context.Context, pool dbQueryRow, cfg *config.Config, 
 			actor_url = EXCLUDED.actor_url,
 			inbox_url = EXCLUDED.inbox_url,
 			outbox_url = EXCLUDED.outbox_url,
-			public_key_pem = EXCLUDED.public_key_pem,
+			public_key_pem = CASE
+				WHEN coalesce(trim(actors.private_key_pem), '') <> '' THEN actors.public_key_pem
+				ELSE EXCLUDED.public_key_pem
+			END,
 			updated_at = now()
 		RETURNING id
 	`, username, domain, actorURL, inboxURL, outboxURL, pem).Scan(&id)

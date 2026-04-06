@@ -1,6 +1,7 @@
 package mastodonapi
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -133,6 +134,10 @@ func (s *Server) getStatus(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusNotFound, "Record not found")
 		return
 	}
+	if row.DeletedAt != nil {
+		writeAPIError(w, http.StatusNotFound, "Record not found")
+		return
+	}
 	if !strings.EqualFold(strings.TrimSpace(row.Type), "create") {
 		writeAPIError(w, http.StatusNotFound, "Record not found")
 		return
@@ -150,30 +155,159 @@ func (s *Server) getStatusContext(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	if s.Pool != nil {
-		raw := r.PathValue("id")
-		dbID, err := strconv.ParseInt(raw, 10, 64)
-		if err != nil || dbID < 1 {
-			writeAPIError(w, http.StatusNotFound, "Record not found")
-			return
+	if s.Pool == nil {
+		writeJSONObjectOK(w, map[string]any{"ancestors": []any{}, "descendants": []any{}})
+		return
+	}
+	ctx := r.Context()
+	raw := r.PathValue("id")
+	dbID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || dbID < 1 {
+		writeAPIError(w, http.StatusNotFound, "Record not found")
+		return
+	}
+	row, err := store.GetActivityByID(ctx, s.Pool, dbID)
+	if err != nil || row.DeletedAt != nil {
+		writeAPIError(w, http.StatusNotFound, "Record not found")
+		return
+	}
+	res, ok := resolveCreateStatusRow(row)
+	if !ok {
+		writeAPIError(w, http.StatusNotFound, "Record not found")
+		return
+	}
+	ancRows := s.ancestorCreateChain(ctx, row)
+	descRows, err := store.ListCreateActivitiesReplyingToNoteIRI(ctx, s.Pool, res.NoteIRI, 80)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "could not load context")
+		return
+	}
+	viewer := int64(0)
+	if aid, ok := s.actorIDFromBearer(r); ok {
+		viewer = aid
+	}
+	ancestors := make([]any, 0, len(ancRows))
+	for _, ar := range ancRows {
+		st, ok := s.mastodonStatusPresentation(ctx, ar, viewer)
+		if ok {
+			ancestors = append(ancestors, st)
 		}
-		if _, err := store.GetActivityByID(r.Context(), s.Pool, dbID); err != nil {
-			writeAPIError(w, http.StatusNotFound, "Record not found")
-			return
+	}
+	descendants := make([]any, 0, len(descRows))
+	for _, dr := range descRows {
+		st, ok := s.mastodonStatusPresentation(ctx, dr, viewer)
+		if ok {
+			descendants = append(descendants, st)
 		}
 	}
 	writeJSONObjectOK(w, map[string]any{
-		"ancestors":   []any{},
-		"descendants": []any{},
+		"ancestors":   ancestors,
+		"descendants": descendants,
 	})
 }
 
-func (s *Server) deleteStatus(w http.ResponseWriter, r *http.Request, _ int64) {
+func (s *Server) ancestorCreateChain(ctx context.Context, start *store.ActivityRow) []store.ActivityRow {
+	if s.Pool == nil || start == nil {
+		return nil
+	}
+	var chain []store.ActivityRow
+	cur := start
+	seen := map[int64]struct{}{}
+	for i := 0; i < 64; i++ {
+		res, ok := resolveCreateStatusRow(cur)
+		if !ok {
+			break
+		}
+		parentIRI, _ := res.Note["inReplyTo"].(string)
+		parentIRI = strings.TrimSpace(parentIRI)
+		if parentIRI == "" {
+			break
+		}
+		parent, err := store.FindCreateActivityByObjectNoteIRI(ctx, s.Pool, parentIRI)
+		if err != nil || parent == nil || parent.DeletedAt != nil {
+			break
+		}
+		if _, dup := seen[parent.ID]; dup {
+			break
+		}
+		seen[parent.ID] = struct{}{}
+		chain = append([]store.ActivityRow{*parent}, chain...)
+		cur = parent
+	}
+	return chain
+}
+
+func (s *Server) deleteStatus(w http.ResponseWriter, r *http.Request, actorID int64) {
 	if r.Method != http.MethodDelete {
 		writeAPIError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	writeAPIError(w, http.StatusNotFound, "Record not found")
+	if s.Pool == nil {
+		writeAPIError(w, http.StatusNotFound, "Record not found")
+		return
+	}
+	ctx := r.Context()
+	raw := r.PathValue("id")
+	dbID, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || dbID < 1 {
+		writeAPIError(w, http.StatusNotFound, "Record not found")
+		return
+	}
+	row, err := store.GetActivityByID(ctx, s.Pool, dbID)
+	if err != nil {
+		writeAPIError(w, http.StatusNotFound, "Record not found")
+		return
+	}
+	if row.ActorID != actorID {
+		writeAPIError(w, http.StatusForbidden, "not allowed")
+		return
+	}
+	if row.DeletedAt != nil {
+		writeAPIError(w, http.StatusNotFound, "Record not found")
+		return
+	}
+	res, ok := resolveCreateStatusRow(row)
+	if !ok {
+		writeAPIError(w, http.StatusNotFound, "Record not found")
+		return
+	}
+	uname, _, _, _, _, err := store.ActorForMastodon(ctx, s.Pool, actorID)
+	if err != nil || !s.H.IsLocalActor(uname) {
+		writeAPIError(w, http.StatusForbidden, "not a local account")
+		return
+	}
+	st, ok := s.mastodonStatusPresentation(ctx, *row, actorID)
+	if !ok {
+		writeAPIError(w, http.StatusInternalServerError, "could not build status")
+		return
+	}
+	root := strings.TrimRight(s.cfg().PublicBaseURL, "/")
+	prof := s.cfg().LocalActorProfileURL(uname)
+	del := map[string]any{
+		"@context": "https://www.w3.org/ns/activitystreams",
+		"type":     "Delete",
+		"id":       newIRI(root, "activities"),
+		"actor":    prof,
+		"to":       []string{"https://www.w3.org/ns/activitystreams#Public"},
+		"object":   res.NoteIRI,
+	}
+	rawDel, err := json.Marshal(del)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "could not build delete")
+		return
+	}
+	if err := s.H.PublishLocalActivityBytes(ctx, uname, rawDel); err != nil {
+		writeAPIError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if _, err := store.SoftDeleteActivityForActor(ctx, s.Pool, dbID, actorID); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "could not delete")
+		return
+	}
+	st["content"] = ""
+	st["text"] = ""
+	st["media_attachments"] = []any{}
+	writeJSONResponse(w, http.StatusOK, st)
 }
 
 func (s *Server) postStatusActionNotFound(w http.ResponseWriter, r *http.Request, _ int64) {

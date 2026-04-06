@@ -4,11 +4,21 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/mastodon-site/activitypub-core/store"
+)
+
+const (
+	noteVisibilityKey            = "_visibility"
+	noteDirectRecipientsKey      = "_directRecipientActorIds"
+	internalInReplyToActivityKey = "_inReplyToActivityId"
+	noteSensitiveKey             = "_sensitive"
+	noteSpoilerTextKey           = "_spoiler_text"
 )
 
 func timelineLimit(r *http.Request) int {
@@ -69,12 +79,39 @@ func (s *Server) mastodonStatusFromCreateRow(ctx context.Context, row store.Acti
 	}
 	content, _ := note["content"].(string)
 	noteIRI, _ := note["id"].(string)
+	vis, _ := note[noteVisibilityKey].(string)
+	vis = strings.TrimSpace(strings.ToLower(vis))
+	if vis == "" {
+		vis = "public"
+	}
+	spoiler, _ := note[noteSpoilerTextKey].(string)
+	if strings.TrimSpace(spoiler) == "" {
+		if s, ok := note["summary"].(string); ok {
+			spoiler = s
+		}
+	}
+	explicitSensitive, _ := note[noteSensitiveKey].(bool)
+	if v, ok := note["sensitive"].(bool); ok && v {
+		explicitSensitive = true
+	}
+	mediaAtts := s.mediaAttachmentsForNote(ctx, row.ActorID, note)
+	statusSensitive := explicitSensitive
+	for _, el := range mediaAtts {
+		m, ok := el.(map[string]any)
+		if !ok {
+			continue
+		}
+		if b, ok := m["sensitive"].(bool); ok && b {
+			statusSensitive = true
+			break
+		}
+	}
 	return map[string]any{
 		"id":                strconv.FormatInt(row.ID, 10),
 		"uri":               noteIRI,
 		"created_at":        publishedFromNoteOrCreate(act, note),
 		"content":           content,
-		"visibility":        "public",
+		"visibility":        vis,
 		"language":          "en",
 		"url":               noteIRI,
 		"replies_count":     0,
@@ -82,17 +119,92 @@ func (s *Server) mastodonStatusFromCreateRow(ctx context.Context, row store.Acti
 		"favourites_count":  0,
 		"favourited":        false,
 		"reblogged":         false,
-		"sensitive":         false,
-		"spoiler_text":      "",
+		"sensitive":         statusSensitive,
+		"spoiler_text":      spoiler,
 		"muted":             false,
 		"pinned":            false,
 		"bookmarked":        false,
 		"account":           acct,
-		"media_attachments": []any{},
+		"media_attachments": mediaAtts,
 		"mentions":          []any{},
 		"tags":              []any{},
 		"emojis":            []any{},
 		"card":              nil,
 		"poll":              nil,
 	}, true
+}
+
+func (s *Server) mediaAttachmentsForNote(ctx context.Context, authorActorID int64, note map[string]any) []any {
+	raw, ok := note["attachment"]
+	if !ok || raw == nil {
+		return []any{}
+	}
+	arr, ok := raw.([]any)
+	if !ok || len(arr) == 0 {
+		return []any{}
+	}
+	out := make([]any, 0, len(arr))
+	for _, el := range arr {
+		doc, ok := el.(map[string]any)
+		if !ok {
+			continue
+		}
+		u, _ := doc["url"].(string)
+		u = strings.TrimSpace(u)
+		if u == "" {
+			continue
+		}
+		mediaType, _ := doc["mediaType"].(string)
+		if mediaType == "" {
+			mediaType, _ = doc["mimeType"].(string)
+		}
+		if mediaType == "" {
+			mediaType = "application/octet-stream"
+		}
+		pu, err := url.Parse(u)
+		if err != nil {
+			continue
+		}
+		key := strings.Trim(path.Base(pu.Path), "/")
+		if key == "" || key == "." {
+			continue
+		}
+		var mid int64
+		if s.Pool != nil {
+			id, err := store.LookupMastodonMediaIDByBlobKey(ctx, s.Pool, authorActorID, key)
+			if err == nil {
+				mid = id
+			}
+		}
+		mt := "unknown"
+		if strings.HasPrefix(strings.ToLower(mediaType), "image/") {
+			mt = "image"
+		}
+		sensitive := false
+		if b, ok := doc["sensitive"].(bool); ok {
+			sensitive = b
+		}
+		var desc any
+		if name, ok := doc["name"].(string); ok && name != "" {
+			desc = name
+		} else if mid > 0 && s.Pool != nil {
+			if mr, err := store.GetMastodonMediaForActor(ctx, s.Pool, mid, authorActorID); err == nil && mr.Description != "" {
+				desc = mr.Description
+			}
+		}
+		out = append(out, map[string]any{
+			"id":                 strconv.FormatInt(mid, 10),
+			"type":               mt,
+			"url":                u,
+			"preview_url":        u,
+			"remote_url":         nil,
+			"preview_remote_url": nil,
+			"text_url":           u,
+			"meta":               map[string]any{},
+			"description":        desc,
+			"blurhash":           nil,
+			"sensitive":          sensitive,
+		})
+	}
+	return out
 }
