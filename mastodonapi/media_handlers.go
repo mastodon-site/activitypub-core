@@ -112,7 +112,10 @@ func (s *Server) readMediaUpload(r *http.Request, max int) (*parsedMediaUpload, 
 				if out.FileContentType == "" {
 					out.FileContentType = "application/octet-stream"
 				}
-				if cd := strings.TrimSpace(p.Header.Get("Content-Disposition")); cd != "" {
+				// Use multipart.Part's parser (same as FormName); filepath.Base applied per RFC 7578.
+				if fn := p.FileName(); fn != "" {
+					out.FileName = fn
+				} else if cd := strings.TrimSpace(p.Header.Get("Content-Disposition")); cd != "" {
 					_, dispParams, derr := mime.ParseMediaType(cd)
 					if derr == nil {
 						out.FileName = dispParams["filename"]

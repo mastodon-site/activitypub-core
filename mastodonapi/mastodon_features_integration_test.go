@@ -7,6 +7,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"strconv"
 	"strings"
 	"testing"
@@ -75,14 +76,18 @@ func TestIntegration_MastodonFeatures_mediaContextDeleteListFilter(t *testing.T)
 		t.Fatal(err)
 	}
 
-	// Upload media (multipart)
+	// Upload media (multipart). Use explicit image/png like browsers/Ivory; CreateFormFile alone
+	// sends application/octet-stream, which needs filename-based inference in the handler.
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
-	fw, err := mw.CreateFormFile("file", "a.png")
+	hdr := make(textproto.MIMEHeader)
+	hdr.Set("Content-Disposition", `form-data; name="file"; filename="a.png"`)
+	hdr.Set("Content-Type", "image/png")
+	partW, err := mw.CreatePart(hdr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fw.Write([]byte("fakepng")); err != nil {
+	if _, err := partW.Write([]byte("fakepng")); err != nil {
 		t.Fatal(err)
 	}
 	if err := mw.Close(); err != nil {

@@ -196,7 +196,17 @@ func (c *Config) EffectiveMediaAllowedMIMETypes() []string {
 	if c == nil || len(c.MediaAllowedMIMETypes) == 0 {
 		return DefaultMediaAllowedMIMETypes()
 	}
-	return c.MediaAllowedMIMETypes
+	out := make([]string, 0, len(c.MediaAllowedMIMETypes))
+	for _, m := range c.MediaAllowedMIMETypes {
+		m = strings.TrimSpace(strings.ToLower(m))
+		if m != "" {
+			out = append(out, m)
+		}
+	}
+	if len(out) == 0 {
+		return DefaultMediaAllowedMIMETypes()
+	}
+	return out
 }
 
 // EffectiveMediaMaxAttachmentsPerStatus returns the cap for media_ids on new statuses (minimum 1).
