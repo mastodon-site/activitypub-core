@@ -62,14 +62,15 @@ func (s *SQL) Dequeue(ctx context.Context) (*queue.Lease, error) {
 	var id int64
 	var jobType string
 	var payload []byte
+	var attempts int
 	err = tx.QueryRow(ctx, `
-		SELECT id, job_type, payload
+		SELECT id, job_type, payload, attempts
 		FROM queue_jobs
 		WHERE status = 'pending' AND run_after <= now()
 		ORDER BY run_after, id
 		FOR UPDATE SKIP LOCKED
 		LIMIT 1
-	`).Scan(&id, &jobType, &payload)
+	`).Scan(&id, &jobType, &payload, &attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -82,7 +83,7 @@ func (s *SQL) Dequeue(ctx context.Context) (*queue.Lease, error) {
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return &queue.Lease{ID: id, Type: queue.Type(jobType), Payload: json.RawMessage(payload)}, nil
+	return &queue.Lease{ID: id, Type: queue.Type(jobType), Payload: json.RawMessage(payload), Attempts: attempts}, nil
 }
 
 // Ack marks a job completed.
@@ -101,10 +102,30 @@ func (s *SQL) Ack(ctx context.Context, id int64) error {
 func (s *SQL) Nack(ctx context.Context, id int64, requeue bool) error {
 	if requeue {
 		_, err := s.pool.Exec(ctx, `
-			UPDATE queue_jobs SET status = 'pending', locked_at = NULL, attempts = attempts + 1
-			WHERE id = $1`, id)
+			UPDATE queue_jobs SET status = 'pending', locked_at = NULL, attempts = attempts + 1, run_after = now()
+			WHERE id = $1 AND status = 'processing'`, id)
 		return err
 	}
-	_, err := s.pool.Exec(ctx, `UPDATE queue_jobs SET status = 'failed', finished_at = now() WHERE id = $1`, id)
+	_, err := s.pool.Exec(ctx, `UPDATE queue_jobs SET status = 'failed', finished_at = now() WHERE id = $1 AND status = 'processing'`, id)
+	return err
+}
+
+// NackSchedule implements queue.SQLDelayedNack for delivery backoff / dead-letter.
+func (s *SQL) NackSchedule(ctx context.Context, id int64, permanent bool, runAfter time.Time, lastErr string) error {
+	if len(lastErr) > 4096 {
+		lastErr = lastErr[:4096]
+	}
+	if permanent {
+		_, err := s.pool.Exec(ctx, `
+			UPDATE queue_jobs SET status = 'failed', finished_at = now(), last_error = NULLIF($2, '')
+			WHERE id = $1 AND status = 'processing'`, id, lastErr)
+		return err
+	}
+	if runAfter.IsZero() {
+		runAfter = time.Now().UTC()
+	}
+	_, err := s.pool.Exec(ctx, `
+		UPDATE queue_jobs SET status = 'pending', locked_at = NULL, attempts = attempts + 1, run_after = $2, last_error = NULLIF($3, '')
+		WHERE id = $1 AND status = 'processing'`, id, runAfter, lastErr)
 	return err
 }

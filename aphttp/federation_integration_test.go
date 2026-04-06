@@ -253,21 +253,36 @@ func TestIntegration_outboxOrderedCollectionJSONShape(t *testing.T) {
 		if doc["@context"] != "https://www.w3.org/ns/activitystreams" {
 			t.Fatalf("@context %#v", doc["@context"])
 		}
-		if doc["type"] != "OrderedCollectionPage" {
+		if doc["type"] != "OrderedCollection" {
 			t.Fatalf("type %#v", doc["type"])
 		}
 		if doc["id"] != "https://integration.test/@localuser/outbox" {
 			t.Fatalf("id %#v", doc["id"])
 		}
-		if doc["partOf"] != "https://integration.test/@localuser/outbox" {
-			t.Fatalf("partOf %#v", doc["partOf"])
-		}
 		if tot, ok := doc["totalItems"].(float64); !ok || int64(tot) != 2 {
 			t.Fatalf("totalItems %#v", doc["totalItems"])
 		}
-		rawItems, ok := doc["orderedItems"].([]any)
+		first, ok := doc["first"].(string)
+		if !ok || first == "" {
+			t.Fatalf("first %#v", doc["first"])
+		}
+		reqPage := httptest.NewRequest(http.MethodGet, first, nil)
+		reqPage.Header.Set("Accept", "application/activity+json")
+		rrPage := httptest.NewRecorder()
+		th.ServeHTTP(rrPage, reqPage)
+		if rrPage.Code != http.StatusOK {
+			t.Fatalf("page status %d %s", rrPage.Code, rrPage.Body.String())
+		}
+		pageDoc := mustParseOutboxDoc(t, rrPage.Body.Bytes())
+		if pageDoc["type"] != "OrderedCollectionPage" {
+			t.Fatalf("page type %#v", pageDoc["type"])
+		}
+		if pageDoc["partOf"] != "https://integration.test/@localuser/outbox" {
+			t.Fatalf("partOf %#v", pageDoc["partOf"])
+		}
+		rawItems, ok := pageDoc["orderedItems"].([]any)
 		if !ok || len(rawItems) != 2 {
-			t.Fatalf("orderedItems %#v", doc["orderedItems"])
+			t.Fatalf("orderedItems %#v", pageDoc["orderedItems"])
 		}
 		if rawItems[0] != "https://integration.test/o/second" || rawItems[1] != "https://integration.test/o/first" {
 			t.Fatalf("order %v", rawItems)

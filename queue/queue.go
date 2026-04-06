@@ -26,9 +26,16 @@ type Job struct {
 
 // Lease represents a claimed job in progress.
 type Lease struct {
-	ID      int64
-	Type    Type
-	Payload json.RawMessage
+	ID       int64
+	Type     Type
+	Payload  json.RawMessage
+	Attempts int // delivery attempts already recorded before this run (SQL queue); 0 if unknown.
+}
+
+// SQLDelayedNack is implemented by SQL queue for delivery backoff and permanent failure.
+type SQLDelayedNack interface {
+	// NackSchedule marks a processing job failed permanently, or returns it to pending with run_after and incremented attempts.
+	NackSchedule(ctx context.Context, id int64, permanent bool, runAfter time.Time, lastErr string) error
 }
 
 // Backend abstracts Redis, SQL, or other brokers.

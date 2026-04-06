@@ -1,6 +1,7 @@
 package aphttp
 
 import (
+	"encoding/json"
 	"fmt"
 	"html"
 	"net/http"
@@ -143,6 +144,35 @@ func (h *Handler) GetActivityOrObject(w http.ResponseWriter, r *http.Request) {
 		writeActivityStreamsJSON(w, r, raw)
 		return
 	}
+
+	noteIRI, actURL, err := store.DeletedCreateNoteForFederationGET(ctx, h.st.Pool, candidates)
+	if err != nil {
+		http.Error(w, "deleted activity lookup", http.StatusInternalServerError)
+		return
+	}
+	if noteIRI != "" {
+		if _, ok := h.cfg.LocalUsernameForActorURL(actURL); !ok {
+			http.NotFound(w, r)
+			return
+		}
+		writeTombstoneGone(w, r, noteIRI)
+		return
+	}
+
+	objURL, ownerURL, err := store.DeletedObjectForFederationGET(ctx, h.st.Pool, candidates)
+	if err != nil {
+		http.Error(w, "deleted object lookup", http.StatusInternalServerError)
+		return
+	}
+	if objURL != "" {
+		if _, ok := h.cfg.LocalUsernameForActorURL(ownerURL); !ok {
+			http.NotFound(w, r)
+			return
+		}
+		writeTombstoneGone(w, r, objURL)
+		return
+	}
+
 	if prefersHTMLCatchall(r) {
 		h.serveCatchallHostHTML(w)
 		return
@@ -151,11 +181,35 @@ func (h *Handler) GetActivityOrObject(w http.ResponseWriter, r *http.Request) {
 }
 
 func writeActivityStreamsJSON(w http.ResponseWriter, r *http.Request, raw []byte) {
+	writeActivityStreamsJSONHeader(w, r)
+	_, _ = w.Write(raw)
+}
+
+func writeTombstoneGone(w http.ResponseWriter, r *http.Request, objectIRI string) {
+	objectIRI = strings.TrimSpace(objectIRI)
+	if objectIRI == "" {
+		http.NotFound(w, r)
+		return
+	}
+	body, err := json.Marshal(map[string]any{
+		"@context": "https://www.w3.org/ns/activitystreams",
+		"type":     "Tombstone",
+		"id":       objectIRI,
+	})
+	if err != nil {
+		http.Error(w, "tombstone", http.StatusInternalServerError)
+		return
+	}
+	writeActivityStreamsJSONHeader(w, r)
+	w.WriteHeader(http.StatusGone)
+	_, _ = w.Write(body)
+}
+
+func writeActivityStreamsJSONHeader(w http.ResponseWriter, r *http.Request) {
 	accept := r.Header.Get("Accept")
 	if strings.Contains(accept, "application/ld+json") || strings.Contains(accept, "application/activity+json") {
 		w.Header().Set("Content-Type", "application/activity+json; charset=utf-8")
 	} else {
 		w.Header().Set("Content-Type", "application/ld+json; profile=\"https://www.w3.org/ns/activitystreams\"; charset=utf-8")
 	}
-	_, _ = w.Write(raw)
 }

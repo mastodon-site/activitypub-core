@@ -150,7 +150,11 @@ func workerLoop(ctx context.Context, id int, q queue.Backend, cfg *config.Config
 		if err := worker.ProcessLease(ctx, cfg, pool, q, lease, hc); err != nil {
 			jobsProcessed.WithLabelValues(string(lease.Type), "error").Inc()
 			log.Printf("worker %d job %d failed: %v", id, lease.ID, err)
-			_ = q.Nack(ctx, lease.ID, true)
+			if lease.Type == queue.TypeDeliverActivity {
+				worker.HandleDeliveryJobFailure(ctx, q, lease, err, cfg)
+			} else {
+				_ = q.Nack(ctx, lease.ID, true)
+			}
 			continue
 		}
 		jobsProcessed.WithLabelValues(string(lease.Type), "ok").Inc()
