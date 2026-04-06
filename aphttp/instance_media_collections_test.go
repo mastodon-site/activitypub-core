@@ -154,7 +154,25 @@ func TestIntegration_followersCollection_includesAcceptedActor(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status %d %s", rr.Code, rr.Body.String())
 	}
-	if !bytes.Contains(rr.Body.Bytes(), []byte(cfg.LocalActorProfileURL("alice"))) {
-		t.Fatalf("expected alice IRI in followers: %s", rr.Body.String())
+	var root map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &root); err != nil {
+		t.Fatalf("root json: %v", err)
+	}
+	if root["type"] != "OrderedCollection" {
+		t.Fatalf("root type %v", root["type"])
+	}
+	first, _ := root["first"].(string)
+	if first == "" {
+		t.Fatalf("missing first in root: %s", rr.Body.String())
+	}
+	rrPage := httptest.NewRecorder()
+	reqPage := httptest.NewRequest(http.MethodGet, first, nil)
+	reqPage.Header.Set("Accept", "application/activity+json")
+	th.ServeHTTP(rrPage, reqPage)
+	if rrPage.Code != http.StatusOK {
+		t.Fatalf("first page status %d %s", rrPage.Code, rrPage.Body.String())
+	}
+	if !bytes.Contains(rrPage.Body.Bytes(), []byte(cfg.LocalActorProfileURL("alice"))) {
+		t.Fatalf("expected alice IRI on first followers page: %s", rrPage.Body.String())
 	}
 }
