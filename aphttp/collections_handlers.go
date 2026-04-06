@@ -1,6 +1,7 @@
 package aphttp
 
 import (
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -138,19 +139,22 @@ func collectionPagingActive(r *http.Request) bool {
 	return parseInt64Ptr(q.Get("max_id")) != nil || parseInt64Ptr(q.Get("since_id")) != nil
 }
 
-// firstCollectionPageURL is the OrderedCollection "first" link: same collection with limit (and no cursors).
+// firstCollectionPageURL is the OrderedCollection "first" link: a paged URL (limit + max_id sentinel).
+// max_id=MaxInt64 means “no upper bound” so the store returns the newest window; without a cursor,
+// collectionPagingActive would stay false and clients would get another bare OrderedCollection.
 func firstCollectionPageURL(collBase string, limit int) string {
+	sentinel := strconv.FormatInt(math.MaxInt64, 10)
 	u, err := url.Parse(collBase)
 	if err != nil || u.Scheme == "" {
 		sep := "?"
 		if strings.Contains(collBase, "?") {
 			sep = "&"
 		}
-		return collBase + sep + "limit=" + strconv.Itoa(limit)
+		return collBase + sep + "limit=" + strconv.Itoa(limit) + "&max_id=" + sentinel
 	}
 	q := u.Query()
 	q.Set("limit", strconv.Itoa(limit))
-	q.Del("max_id")
+	q.Set("max_id", sentinel)
 	q.Del("since_id")
 	u.RawQuery = q.Encode()
 	return u.String()
