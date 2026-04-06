@@ -266,7 +266,7 @@ func TestIntegration_outboxOrderedCollectionJSONShape(t *testing.T) {
 		if !ok || first == "" {
 			t.Fatalf("first %#v", doc["first"])
 		}
-		reqPage := httptest.NewRequest(http.MethodGet, first, nil)
+		reqPage := httptestNewRequestAbsolute(t, http.MethodGet, first)
 		reqPage.Header.Set("Accept", "application/activity+json")
 		rrPage := httptest.NewRecorder()
 		th.ServeHTTP(rrPage, reqPage)

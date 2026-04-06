@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
@@ -126,6 +127,24 @@ func mustParseOutboxDoc(t *testing.T, raw []byte) map[string]any {
 		t.Fatalf("outbox json: %v", err)
 	}
 	return m
+}
+
+// httptestNewRequestAbsolute builds a server-bound GET from an absolute URL (path + query + Host).
+// Using httptest.NewRequest(method, absURL, nil) alone can leave Request.Host empty on some Go versions,
+// which breaks handlers that rely on the request URL matching the public site.
+func httptestNewRequestAbsolute(t *testing.T, method, abs string) *http.Request {
+	t.Helper()
+	u, err := url.Parse(abs)
+	if err != nil {
+		t.Fatalf("parse url: %v", err)
+	}
+	uri := u.RequestURI()
+	if uri == "" {
+		t.Fatalf("empty request-uri for %q", abs)
+	}
+	r := httptest.NewRequest(method, uri, nil)
+	r.Host = u.Host
+	return r
 }
 
 func findMigrationsDir(t *testing.T) string {
