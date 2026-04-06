@@ -191,7 +191,10 @@ func TestIntegration_MastodonFeatures_mediaContextDeleteListFilter(t *testing.T)
 	if err := json.Unmarshal(recL.Body.Bytes(), &listDoc); err != nil {
 		t.Fatal(err)
 	}
-	listID, _ := listDoc["id"].(string)
+	listID := fmtInt64MapKey(listDoc["id"])
+	if listID == "" {
+		t.Fatalf("list id missing or wrong type: %#v", listDoc["id"])
+	}
 
 	addAcc := `{"account_ids":[` + strconv.FormatInt(bobID, 10) + `]}`
 	reqA := httptest.NewRequest(http.MethodPost, "/api/v1/lists/"+listID+"/accounts", strings.NewReader(addAcc))
