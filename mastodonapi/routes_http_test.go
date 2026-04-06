@@ -72,7 +72,7 @@ func TestMastodonRoutes_publicAndUnauthorized(t *testing.T) {
 		{name: "account followers stub", method: http.MethodGet, path: "/api/v1/accounts/7/followers", wantCode: http.StatusOK},
 		{name: "account statuses empty", method: http.MethodGet, path: "/api/v1/accounts/7/statuses", wantCode: http.StatusOK},
 		{name: "poll 404", method: http.MethodGet, path: "/api/v1/polls/1", wantCode: http.StatusNotFound},
-		{name: "media 404", method: http.MethodGet, path: "/api/v1/media/1", wantCode: http.StatusNotFound},
+		{name: "media 401 without auth", method: http.MethodGet, path: "/api/v1/media/1", wantCode: http.StatusUnauthorized},
 		{name: "filters list v1 401", method: http.MethodGet, path: "/api/v1/filters", wantCode: http.StatusUnauthorized},
 		{name: "domain blocks", method: http.MethodGet, path: "/api/v1/domain_blocks", wantCode: http.StatusOK},
 		{name: "trends tags", method: http.MethodGet, path: "/api/v1/trends/tags", wantCode: http.StatusOK},

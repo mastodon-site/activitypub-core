@@ -112,8 +112,9 @@ func (s *Server) mountMastodon(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/v1/lists/{id}", b(s.deleteListByID))
 
 	mux.HandleFunc("POST /api/v1/media", b(s.postAPIMedia))
+	mux.HandleFunc("POST /api/v2/media", b(s.postAPIMediaV2))
 	mux.HandleFunc("PUT /api/v1/media/{id}", b(s.putAPIMedia))
-	mux.HandleFunc("GET /api/v1/media/{id}", s.getAPIMedia)
+	mux.HandleFunc("GET /api/v1/media/{id}", b(s.getAPIMedia))
 
 	mux.HandleFunc("GET /api/v1/polls/{id}", s.getPoll)
 	mux.HandleFunc("POST /api/v1/polls/{id}/votes", b(s.postPollVotes))

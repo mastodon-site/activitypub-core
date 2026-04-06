@@ -170,12 +170,14 @@ func (s *Server) getVerifyCredentials(w http.ResponseWriter, r *http.Request, ac
 }
 
 type statusCreateJSON struct {
-	Status            string  `json:"status"`
-	Visibility        string  `json:"visibility"`
-	QuotedStatusID    *int64  `json:"quoted_status_id,omitempty"`
-	InReplyToID       *int64  `json:"in_reply_to_id,omitempty"`
-	MediaIDs          []int64 `json:"media_ids,omitempty"`
-	DirectAccountIDs  []int64 `json:"direct_account_ids,omitempty"`
+	Status           string  `json:"status"`
+	Visibility       string  `json:"visibility"`
+	QuotedStatusID   *int64  `json:"quoted_status_id,omitempty"`
+	InReplyToID      *int64  `json:"in_reply_to_id,omitempty"`
+	MediaIDs         []int64 `json:"media_ids,omitempty"`
+	DirectAccountIDs []int64 `json:"direct_account_ids,omitempty"`
+	Sensitive        bool    `json:"sensitive"`
+	SpoilerText      string  `json:"spoiler_text"`
 }
 
 func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID int64) {
@@ -198,6 +200,8 @@ func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID in
 	var inReplyToID *int64
 	var mediaIDs []int64
 	var directAccountIDs []int64
+	statusSensitive := false
+	spoilerText := ""
 	visibility := "public"
 	if strings.Contains(strings.ToLower(ct), "application/json") {
 		var body statusCreateJSON
@@ -210,6 +214,8 @@ func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID in
 		inReplyToID = body.InReplyToID
 		mediaIDs = body.MediaIDs
 		directAccountIDs = body.DirectAccountIDs
+		statusSensitive = body.Sensitive
+		spoilerText = strings.TrimSpace(body.SpoilerText)
 		if strings.TrimSpace(body.Visibility) != "" {
 			visibility = strings.TrimSpace(strings.ToLower(body.Visibility))
 		}
@@ -234,10 +240,18 @@ func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID in
 		if v := strings.TrimSpace(strings.ToLower(r.FormValue("visibility"))); v != "" {
 			visibility = v
 		}
+		statusSensitive = parseBoolish(r.FormValue("sensitive"))
+		spoilerText = strings.TrimSpace(r.FormValue("spoiler_text"))
 	}
 	text = strings.TrimSpace(text)
-	if text == "" && len(mediaIDs) == 0 {
+	spoilerText = strings.TrimSpace(spoilerText)
+	if text == "" && len(mediaIDs) == 0 && spoilerText == "" {
 		writeAPIError(w, http.StatusBadRequest, "Validation failed: Text can't be blank")
+		return
+	}
+	maxMedia := s.cfg().EffectiveMediaMaxAttachmentsPerStatus()
+	if len(mediaIDs) > maxMedia {
+		writeAPIError(w, http.StatusUnprocessableEntity, "Validation failed: Too many media attachments")
 		return
 	}
 	if visibility != "public" && visibility != "unlisted" && visibility != "private" && visibility != "direct" {
@@ -281,13 +295,20 @@ func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID in
 			return
 		}
 	}
+	contentHTML := "<p></p>"
+	if text != "" {
+		contentHTML = "<p>" + htmlEscapeBasic(text) + "</p>"
+	}
 	note := map[string]any{
 		"type":         "Note",
 		"id":           noteID,
 		"attributedTo": prof,
-		"content":      "<p>" + htmlEscapeBasic(text) + "</p>",
+		"content":      contentHTML,
 		"to":           to,
 		"cc":           cc,
+	}
+	if spoilerText != "" {
+		note["summary"] = spoilerText
 	}
 	note[noteVisibilityKey] = visibility
 	if visibility == "direct" {
@@ -297,6 +318,7 @@ func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID in
 		}
 		note[noteDirectRecipientsKey] = ids
 	}
+	mediaSensitive := false
 	if len(mediaIDs) > 0 {
 		atts := make([]any, 0, len(mediaIDs))
 		for _, mid := range mediaIDs {
@@ -308,17 +330,37 @@ func (s *Server) postStatuses(w http.ResponseWriter, r *http.Request, actorID in
 				writeAPIError(w, http.StatusUnprocessableEntity, "invalid media_ids")
 				return
 			}
+			if mr.ProcessingState != store.MediaProcessingComplete {
+				writeAPIError(w, http.StatusUnprocessableEntity, "media is still processing")
+				return
+			}
+			if mr.Sensitive {
+				mediaSensitive = true
+			}
 			mediaURL := root + "/media/" + mr.BlobKey
-			atts = append(atts, map[string]any{
+			doc := map[string]any{
 				"type":      "Document",
 				"mediaType": mr.ContentType,
 				"url":       mediaURL,
-			})
+			}
+			if mr.Description != "" {
+				doc["name"] = mr.Description
+			}
+			if mr.Sensitive {
+				doc["sensitive"] = true
+			}
+			atts = append(atts, doc)
 		}
 		if len(atts) > 0 {
 			note["attachment"] = atts
 		}
 	}
+	combinedSensitive := statusSensitive || mediaSensitive
+	note[noteSensitiveKey] = combinedSensitive
+	if combinedSensitive {
+		note["sensitive"] = true
+	}
+	note[noteSpoilerTextKey] = spoilerText
 	if quotedStatusID != nil && *quotedStatusID > 0 {
 		qrow, err := store.GetActivityByID(r.Context(), s.Pool, *quotedStatusID)
 		if err != nil || qrow == nil || !strings.EqualFold(strings.TrimSpace(qrow.Type), "create") {

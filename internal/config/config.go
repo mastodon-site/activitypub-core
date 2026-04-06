@@ -49,6 +49,14 @@ type Config struct {
 	// MediaUploadSecret enables POST /media with Authorization: Bearer <secret>.
 	MediaUploadSecret   string
 	MediaMaxUploadBytes int
+	// MediaMaxAttachmentsPerStatus caps media_ids on POST /api/v1/statuses (AP_MEDIA_MAX_ATTACHMENTS_PER_STATUS, default 4).
+	MediaMaxAttachmentsPerStatus int
+	// MediaAllowedMIMETypes is the upload allowlist for POST /api/v1|v2/media; empty means built-in image defaults.
+	MediaAllowedMIMETypes []string
+	// MediaAsyncUpload makes POST /api/v2/media return 202 while attachments finish processing in the background (AP_MEDIA_ASYNC_UPLOAD).
+	MediaAsyncUpload bool
+	// MediaDescriptionLimit is reported in GET /api/v2/instance configuration (AP_MEDIA_DESCRIPTION_LIMIT, default 1500).
+	MediaDescriptionLimit int
 
 	// RequireAuthorizedFetch rejects unsigned GET for federation objects when true (AP_REQUIRE_AUTHORIZED_FETCH).
 	RequireAuthorizedFetch bool
@@ -97,6 +105,8 @@ func Load() (*Config, error) {
 		OutboxPostSecret:            os.Getenv("AP_OUTBOX_POST_SECRET"),
 		MediaUploadSecret:           os.Getenv("AP_MEDIA_UPLOAD_SECRET"),
 		MediaMaxUploadBytes:         getenvInt("AP_MEDIA_MAX_UPLOAD_BYTES", 10<<20),
+		MediaMaxAttachmentsPerStatus: getenvInt("AP_MEDIA_MAX_ATTACHMENTS_PER_STATUS", 4),
+		MediaDescriptionLimit:        getenvInt("AP_MEDIA_DESCRIPTION_LIMIT", 1500),
 		InstanceActorPrivateKeyPath: os.Getenv("AP_INSTANCE_ACTOR_PRIVATE_KEY_PATH"),
 		BlobBackend:                 strings.ToLower(getenv("AP_BLOB_BACKEND", "filesystem")),
 		BlobFSRoot:                  getenv("AP_BLOB_FS_ROOT", "./blobdata"),
@@ -161,8 +171,44 @@ func Load() (*Config, error) {
 	if truthyEnv("AP_OPEN_REGISTRATIONS") {
 		c.OpenRegistrations = true
 	}
+	if truthyEnv("AP_MEDIA_ASYNC_UPLOAD") {
+		c.MediaAsyncUpload = true
+	}
+	if v := strings.TrimSpace(os.Getenv("AP_MEDIA_ALLOWED_MIME_TYPES")); v != "" {
+		for _, part := range strings.Split(v, ",") {
+			part = strings.TrimSpace(strings.ToLower(part))
+			if part != "" {
+				c.MediaAllowedMIMETypes = append(c.MediaAllowedMIMETypes, part)
+			}
+		}
+	}
 
 	return c, nil
+}
+
+// DefaultMediaAllowedMIMETypes is the implicit allowlist when AP_MEDIA_ALLOWED_MIME_TYPES is unset.
+func DefaultMediaAllowedMIMETypes() []string {
+	return []string{"image/jpeg", "image/png", "image/gif", "image/webp"}
+}
+
+// EffectiveMediaAllowedMIMETypes returns the configured allowlist or the default image types.
+func (c *Config) EffectiveMediaAllowedMIMETypes() []string {
+	if c == nil || len(c.MediaAllowedMIMETypes) == 0 {
+		return DefaultMediaAllowedMIMETypes()
+	}
+	return c.MediaAllowedMIMETypes
+}
+
+// EffectiveMediaMaxAttachmentsPerStatus returns the cap for media_ids on new statuses (minimum 1).
+func (c *Config) EffectiveMediaMaxAttachmentsPerStatus() int {
+	n := 4
+	if c != nil && c.MediaMaxAttachmentsPerStatus > 0 {
+		n = c.MediaMaxAttachmentsPerStatus
+	}
+	if n < 1 {
+		return 1
+	}
+	return n
 }
 
 func truthyEnv(key string) bool {
