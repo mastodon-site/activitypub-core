@@ -1,9 +1,21 @@
 ---
-description: PR conventions including semver labels
+description: PR conventions including go fmt and semver labels
 alwaysApply: true
 ---
 
 # Pull Requests
+
+## Before raising a PR (Go)
+
+From the repository root (the directory containing `go.mod`), run formatting for the whole module:
+
+```bash
+go fmt ./...
+```
+
+This step is **required** before opening or updating a pull request. If `go fmt` changes any files, include those changes in the same commit or branch as the rest of the PR. Do not open a PR with unformatted Go source.
+
+## Semver label
 
 When creating a pull request with `gh pr create`, always add a semver label:
 
